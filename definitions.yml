@@ -1,0 +1,43 @@
+crs_reference: 25832
+
+# DLR CropTypes years to download, reproject and plot (2017-2024 available)
+years:
+  - 2017
+  - 2018
+  - 2019
+  - 2020
+  - 2021
+  - 2022
+  - 2023
+  - 2024
+
+# years shown as rows of maps in the grid plot (subset of years); the rank
+# chart next to the grid always shows all years
+grid_years:
+  - 2017
+  - 2020
+  - 2024
+
+# total area of Germany in km² (Destatis, as of 31.12.2023, published in the
+# UBA table "Fläche und Bevölkerung"); the DLR raster cannot provide it because
+# 0 is both non-farmland and outside Germany
+germany_area_km2: 357683
+
+# number of crop types with the largest area to highlight in the maps
+top_n: 6
+
+# number of crop types in the rank/area chart; every crop that reached this
+# rank in at least one year is shown
+ranking_top_n: 10
+
+# rank/area chart: only ranks up to this number get a rank and area label
+ranking_label_top_n: 5
+
+# number of crop types in the change charts (largest by mean area over all
+# years)
+change_top_n: 6
+
+# inclusive year ranges compared in the period change maps
+change_periods:
+  first: [2017, 2020]
+  second: [2021, 2024]

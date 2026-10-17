@@ -1,0 +1,35 @@
+# data files (rasters, vectors, tables) --------------------------------------
+*.tif
+*.tiff
+*.vrt
+*.ovr
+*.aux.xml
+*.nc
+*.gpkg
+*.shp
+*.shx
+*.dbf
+*.prj
+*.cpg
+*.geojson
+*.parquet
+*.csv
+*.zip
+
+# images (rendered plots) ----------------------------------------------------
+*.png
+
+# logs and downloaded text files (e.g. the DLR legend in cache/) -------------
+*.txt
+*.log
+
+# Claude Code files -------------------------------------------------------------
+.claude/
+CLAUDE.md
+CLAUDE.local.md
+
+# R session files --------------------------------------------------------------
+.Rhistory
+.RData
+.Rproj.user/
+Rplots.pdf
