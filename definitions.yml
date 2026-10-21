@@ -41,3 +41,49 @@ change_top_n: 6
 change_periods:
   first: [2017, 2020]
   second: [2021, 2024]
+
+# field sizes ------------------------------------------------------------------
+
+# Fields of the World harmonised field boundaries (GeoParquet, latest edition):
+# https://source.coop/ftw/harmonized-field-data
+# One collection per state. unit says what one polygon is:
+# - field: the area a farmer declared with one crop (Schlag)
+# - reference parcel: a farm's contiguous area (BY Feldstück, HE Referenzparzelle)
+# - field block: area within permanent borders, may hold several farms' fields
+# Not covered: Baden-Württemberg (only cadastral sub-parcels), Rheinland-Pfalz
+# (no data) and Mecklenburg-Vorpommern (download capped at 20,000 blocks).
+field_collections:
+  - {collection: de_bb, state: "Brandenburg & Berlin", short: BB, unit: field}
+  - {collection: de_nds, state: "Lower Saxony, Bremen & Hamburg", short: NI, unit: field}
+  - {collection: de_nrw, state: "North Rhine-Westphalia", short: NW, unit: field}
+  - {collection: de_sl, state: "Saarland", short: SL, unit: field}
+  - {collection: de_by_block, state: "Bavaria", short: BY, unit: reference parcel}
+  - {collection: de_he, state: "Hesse", short: HE, unit: reference parcel}
+  - {collection: de_sh, state: "Schleswig-Holstein", short: SH, unit: field block}
+  - {collection: de_sax, state: "Saxony", short: SN, unit: field block}
+  - {collection: de_st, state: "Saxony-Anhalt", short: ST, unit: field block}
+  - {collection: de_th, state: "Thuringia", short: TH, unit: field block}
+
+# field blocks of states that also publish fields, to show how much larger
+# blocks are than fields (not mapped)
+field_block_collections:
+  - {collection: de_bb_block, state: "Brandenburg & Berlin", short: BB, unit: field block}
+  - {collection: de_nds_block, state: "Lower Saxony, Bremen & Hamburg", short: NI, unit: field block}
+
+# polygons below this size (ha) are dropped: mostly landscape elements and
+# slivers; 0.1 ha is the minimum parcel size for direct payments
+field_min_ha: 0.1
+
+# map cells: edge length (km) and minimum number of fields per cell
+field_cell_km: 5
+field_min_count: 20
+
+# zoom windows with the real field polygons: centre (WGS84) and edge length
+field_zoom_km: 4
+field_zoom_windows:
+  - {label: "Uckermark", lon: 13.80, lat: 53.30}
+  - {label: "Magdeburg Börde", lon: 11.40, lat: 52.05}
+  - {label: "Hildesheim Börde", lon: 10.12, lat: 52.22}
+  - {label: "Münsterland", lon: 7.55, lat: 51.95}
+  - {label: "Lower Franconia", lon: 10.05, lat: 49.65}
+  - {label: "Vogelsberg", lon: 9.20, lat: 50.55}
