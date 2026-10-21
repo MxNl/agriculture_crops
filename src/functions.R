@@ -223,3 +223,69 @@ theme_strip_markdown <- function() {
     )
   )
 }
+
+# theme of the charts, as in the ranking and rotation charts: centred title
+# and subtitle
+theme_charts <- function(base_size = 14) {
+  theme_minimal(base_size = base_size) +
+    theme(
+      plot.title = element_text(face = "bold", size = rel(1.4), hjust = 0.5),
+      plot.subtitle = element_text(
+        colour = "grey35", hjust = 0.5, margin = margin(t = 6, b = 16)
+      ),
+      plot.caption = element_text(
+        colour = "grey50", size = rel(0.7), margin = margin(t = 18)
+      ),
+      panel.grid.minor = element_blank(),
+      plot.margin = margin(20, 20, 15, 20),
+      plot.background = element_rect(fill = "white", colour = NA)
+    )
+}
+
+# field boundaries (Fields of the World) --------------------------------------
+
+# harmonised field boundaries, one GeoParquet per state and edition:
+# https://source.coop/ftw/harmonized-field-data
+url_fields <- "https://data.source.coop/ftw/harmonized-field-data"
+dir_fields_raw <- "cache/fields_ftw"
+
+# download a collection, year = NULL for the latest edition. An existing file
+# is kept, so delete it to update to a newer edition
+download_fields <- function(collection, year = NULL) {
+  dir.create(dir_fields_raw, showWarnings = FALSE, recursive = TRUE)
+  if (is.null(year)) {
+    file <- str_glue("{collection}.parquet")
+    url <- str_glue("{url_fields}/{collection}/latest/{file}")
+  } else {
+    file <- str_glue("{collection}-{year}.parquet")
+    url <- str_glue("{url_fields}/{collection}/year={year}/{file}")
+  }
+  path_raw <- file.path(dir_fields_raw, file)
+
+  if (!file.exists(path_raw)) {
+    status <- curl::multi_download(url, path_raw, resume = TRUE, progress = FALSE)
+    if (!status$success) {
+      stop("Download failed for ", url, ": ", status$error)
+    }
+  }
+
+  path_raw
+}
+
+# all attributes and the geometry of a downloaded collection, in the CRS of
+# the source (taken from the GeoParquet metadata)
+read_fields_ftw <- function(path_raw) {
+  geo <- jsonlite::fromJSON(arrow::open_dataset(path_raw)$metadata$geo)
+  fields <- arrow::read_parquet(path_raw, col_select = -bbox)
+
+  st_sf(
+    # ids are not unique where a field has sub-fields (Lower Saxony), so the
+    # repeats get a suffix: _1, _2, ...
+    select(fields, -geometry) |>
+      mutate(id = make.unique(as.character(id), sep = "_")),
+    geometry = st_as_sfc(
+      structure(as.list(fields$geometry), class = "WKB"),
+      crs = st_crs(str_c("EPSG:", geo$columns$geometry$crs$id$code))
+    )
+  )
+}
