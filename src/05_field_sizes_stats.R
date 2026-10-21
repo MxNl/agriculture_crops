@@ -16,14 +16,10 @@
 
 library(arrow)
 
-# borders, settings and theme
+# borders, settings, theme and field boundary download
 source("src/functions.R")
 
 # settings ------------------------------------------------------------------
-
-url_base <- "https://data.source.coop/ftw/harmonized-field-data"
-dir_raw <- "cache/fields_ftw"
-dir.create(dir_raw, showWarnings = FALSE, recursive = TRUE)
 
 collections <- c(
   definitions$field_collections,
@@ -33,7 +29,7 @@ collections <- c(
 
 zoom_collections <- map_chr(definitions$field_collections, "collection")
 path_fields <- \(collection) str_glue("results/fields_ftw_{collection}.parquet")
-path_zoom <- \(collection) str_glue("cache/fields_ftw/zoom_{collection}.gpkg")
+path_zoom <- \(collection) file.path(dir_fields_raw, str_glue("zoom_{collection}.gpkg"))
 path_zoom_all <- "results/fields_ftw_zoom.gpkg"
 
 # zoom windows as squares in the reference CRS
@@ -115,26 +111,7 @@ classify_land_use <- function(fields, collection) {
   coalesce(land_use, "other")
 }
 
-# download and reduce per collection ------------------------------------------
-
-download_collection <- function(collection) {
-  path_raw <- file.path(dir_raw, str_glue("{collection}.parquet"))
-
-  # "latest" changes with each new edition, so an existing file is kept
-  if (!file.exists(path_raw)) {
-    status <- curl::multi_download(
-      str_glue("{url_base}/{collection}/latest/{collection}.parquet"),
-      path_raw,
-      resume = TRUE,
-      progress = FALSE
-    )
-    if (!status$success) {
-      stop("Download failed for ", collection, ": ", status$error)
-    }
-  }
-
-  path_raw
-}
+# reduce per collection --------------------------------------------------------
 
 reduce_collection <- function(collection) {
   if (file.exists(path_fields(collection)) && file.exists(path_zoom(collection))) {
@@ -142,16 +119,8 @@ reduce_collection <- function(collection) {
   }
   message(str_glue("{format(Sys.time(), '%H:%M')} {collection}"))
 
-  path_raw <- download_collection(collection)
-  # CRS of the geometry column from the GeoParquet metadata
-  geo <- jsonlite::fromJSON(open_dataset(path_raw)$metadata$geo)
-  crs_source <- st_crs(str_c("EPSG:", geo$columns$geometry$crs$id$code))
-
-  fields <- read_parquet(path_raw, col_select = -bbox)
-  geometry <- st_as_sfc(
-    structure(as.list(fields$geometry), class = "WKB"),
-    crs = crs_source
-  )
+  fields <- read_fields_ftw(download_fields(collection))
+  geometry <- st_geometry(fields)
 
   # areas in the source CRS if it is projected (UTM zone of the state),
   # otherwise in the reference CRS

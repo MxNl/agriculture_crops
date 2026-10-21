@@ -74,9 +74,24 @@ field_block_collections:
 # slivers; 0.1 ha is the minimum parcel size for direct payments
 field_min_ha: 0.1
 
-# map cells: edge length (km) and minimum number of fields per cell
-field_cell_km: 5
+# map cells: hexagons of this area (km²) and minimum number of fields per cell
+field_hex_km2: 25
 field_min_count: 20
+
+# scico palettes (https://www.fabiocrameri.ch/colourmaps/): field size and
+# field size relative to the median
+field_palette_size: lajolla
+field_palette_ratio: vik
+
+# crop per polygon from the DLR CropTypes map of the latest year in years: the
+# majority class, used where it covers at least this share of the polygon
+field_crop_min_share: 0.75
+
+# check of the DLR crops against the crops the farmers declared: editions of
+# collections with fields and crops, in years covered by the DLR maps
+field_crop_validation:
+  - {collection: de_bb, year: 2023}
+  - {collection: de_nrw, year: 2023}
 
 # zoom windows with the real field polygons: centre (WGS84) and edge length
 field_zoom_km: 4
