@@ -93,7 +93,7 @@ plot_crop_maps <- function(cells, facets, fill_scale, title, subtitle) {
     )
 }
 
-period_label <- \(p) str_glue("{min(p)}–{max(p)}")
+period_label <- \(p) str_glue("{min(p)}\u2013{max(p)}")
 
 # 1. period change of the share of farmland ---------------------------------
 
@@ -150,7 +150,7 @@ plot_change <- plot_crop_maps(
   ),
   subtitle = str_glue(
     "Change of each crop's share of farmland per 500 m cell in percentage ",
-    "points (pp, e.g. 20% → 25% = +5 pp); blue = more, red = less. ",
+    "points (pp, e.g. 20% \u2192 25% = +5 pp); blue = more, red = less. ",
     "Cells with < {100 * min_farmland_share}% farmland are blank."
   )
 )
@@ -188,7 +188,7 @@ national_repeat <- tibble(
   transmute(
     value,
     label_extra = str_c(
-      "Ø ", scales::label_number(accuracy = 0.1)(mean), " of ",
+      "\u00D8 ", scales::label_number(accuracy = 0.1)(mean), " of ",
       length(years), " years"
     )
   )
@@ -206,7 +206,7 @@ plot_repeat <- plot_crop_maps(
     name = str_glue("Years grown (of {length(years)})")
   ),
   title = str_glue(
-    "How often crops return to the same field, {min(years)}–{max(years)}"
+    "How often crops return to the same field, {min(years)}\u2013{max(years)}"
   ),
   subtitle = str_glue(
     "Mean number of years a crop was grown on the land that grew it at ",
@@ -257,7 +257,7 @@ rotation <- read_csv(path_transitions, show_col_types = FALSE) |>
     # stacked, which shifts all labels
     flow_label = if_else(
       share >= 0.1,
-      str_c("→ ", to, " ", scales::label_percent(accuracy = 1)(share)),
+      str_c("\u2192 ", to, " ", scales::label_percent(accuracy = 1)(share)),
       ""
     )
   )
@@ -308,11 +308,11 @@ plot_rotation <- rotation |>
   # little space below the blocks, so the axis labels sit close to them
   scale_y_continuous(labels = NULL, expand = expansion(mult = c(0.01, 0.02))) +
   labs(
-    title = str_glue("What follows what: crop rotation, {min(years)}–{max(years)}"),
+    title = str_glue("What follows what: crop rotation, {min(years)}\u2013{max(years)}"),
     subtitle = str_glue(
       "Area of each crop by the crop grown on the same land the next year, ",
       "mean of all {length(years) - 1} year pairs.\nLabels: share of the ",
-      "crop's area (≥ 10%)."
+      "crop's area (\u2265 10%)."
     ),
     caption = str_remove(caption, " Borders: Natural Earth\\."),
     x = NULL,

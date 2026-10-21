@@ -31,7 +31,7 @@ ranking_label_top_n <- definitions$ranking_label_top_n %||% 5
 germany_area_km2 <- definitions$germany_area_km2
 
 labels_explained <- str_c(
-  "Labels: area · share of all agricultural land · ",
+  "Labels: area \u00B7 share of all agricultural land \u00B7 ",
   "share of Germany's total area."
 )
 grid_years <- sort(definitions$grid_years)
@@ -118,8 +118,8 @@ plot_map_row <- function(year_plot) {
         title = str_wrap(str_c("#", rank, " ", class), width = 16),
         detail = str_c(
           scales::label_number(accuracy = 100, big.mark = ",")(area_km2),
-          " km² · ", percent(area_km2 / agri_area_km2),
-          " · ", percent(area_km2 / germany_area_km2)
+          " km\u00B2 \u00B7 ", percent(area_km2 / agri_area_km2),
+          " \u00B7 ", percent(area_km2 / germany_area_km2)
         ),
         tone_colour = tone_colour
       ),
@@ -177,7 +177,7 @@ plot_ranking <- function() {
         rank <= ranking_label_top_n & share >= 0.08,
         str_c(
           "#", rank, "\n",
-          scales::label_number(scale = 1e-3, accuracy = 0.1, suffix = "k km²")(
+          scales::label_number(scale = 1e-3, accuracy = 0.1, suffix = "k km\u00B2")(
             area_km2
           )
         ),
@@ -240,7 +240,7 @@ plot_ranking <- function() {
     coord_cartesian(clip = "off") +
     labs(
       title = str_glue(
-        "Germany's largest crops by area, {min(years)}–{max(years)}"
+        "Germany's largest crops by area, {min(years)}\u2013{max(years)}"
       ),
       subtitle = str_glue(
         "Crops are stacked by area per year, largest on top; block height is ",
