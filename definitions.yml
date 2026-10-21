@@ -81,7 +81,10 @@ field_min_count: 20
 # scico palettes (https://www.fabiocrameri.ch/colourmaps/): field size and
 # field size relative to the median
 field_palette_size: lajolla
-field_palette_ratio: vik
+field_palette_ratio: bam
+# part of the ratio palette used, symmetric around its middle (narrower for
+# cyclic palettes like bamO, whose ends meet in the same colour)
+field_palette_ratio_range: [0, 1]
 
 # crop per polygon from the DLR CropTypes map of the latest year in years: the
 # majority class, used where it covers at least this share of the polygon
