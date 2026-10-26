@@ -85,6 +85,8 @@ field_palette_ratio: bam
 # part of the ratio palette used, symmetric around its middle (narrower for
 # cyclic palettes like bamO, whose ends meet in the same colour)
 field_palette_ratio_range: [0, 1]
+# field edges per ha of farmland
+field_palette_edges: bamako
 
 # crop per polygon from the DLR CropTypes map of the latest year in years: the
 # majority class, used where it covers at least this share of the polygon
@@ -95,6 +97,12 @@ field_crop_min_share: 0.75
 field_crop_validation:
   - {collection: de_bb, year: 2023}
   - {collection: de_nrw, year: 2023}
+
+# yearly editions for the time series of field sizes (collections with
+# fields, all editions available on source.coop)
+field_time_series:
+  - {collection: de_bb, years: [2010, 2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2026]}
+  - {collection: de_nrw, years: [2019, 2020, 2021, 2022, 2023, 2026]}
 
 # zoom windows with the real field polygons: centre (WGS84) and edge length
 field_zoom_km: 4

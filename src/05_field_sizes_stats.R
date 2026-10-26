@@ -6,8 +6,10 @@
 #
 # - results/fields_ftw_<collection>.parquet: id, land use (arable, grassland,
 #   permanent crops, other), crop (HCAT name, only where fields carry crops),
-#   area in ha and centroid in the reference CRS
+#   area in ha, perimeter in m and centroid in the reference CRS
 # - results/fields_ftw_zoom.gpkg: the polygons of the zoom windows
+# - results/fields_ftw_<collection>-<year>.parquet: id, land use, area and
+#   perimeter of the yearly editions in field_time_series
 #
 # Areas are computed from the geometry (the published areas differ between
 # states, some are eligible areas). Collections whose outputs exist are
@@ -113,24 +115,37 @@ classify_land_use <- function(fields, collection) {
 
 # reduce per collection --------------------------------------------------------
 
+# area (ha) and perimeter (m) in the source CRS if it is projected (UTM zone
+# of the state), otherwise in the reference CRS; geometry in the reference CRS
+measure_fields <- function(fields) {
+  geometry <- st_geometry(fields)
+  if (st_is_longlat(geometry)) {
+    geometry <- st_transform(geometry, definitions$crs_reference)
+  }
+  measured <- list(
+    area_ha = as.numeric(st_area(geometry)) / 1e4,
+    # length of the outline (st_perimeter() would need lwgeom)
+    perimeter_m = as.numeric(st_length(st_boundary(geometry))),
+    geometry = st_transform(geometry, definitions$crs_reference)
+  )
+  measured
+}
+
+# outputs written by an older version of this script lack columns
+up_to_date <- function(path, columns) {
+  file.exists(path) && all(columns %in% names(open_dataset(path)))
+}
+
 reduce_collection <- function(collection) {
-  if (file.exists(path_fields(collection)) && file.exists(path_zoom(collection))) {
+  if (up_to_date(path_fields(collection), "perimeter_m") &&
+        file.exists(path_zoom(collection))) {
     return(invisible())
   }
   message(str_glue("{format(Sys.time(), '%H:%M')} {collection}"))
 
   fields <- read_fields_ftw(download_fields(collection))
-  geometry <- st_geometry(fields)
-
-  # areas in the source CRS if it is projected (UTM zone of the state),
-  # otherwise in the reference CRS
-  if (st_is_longlat(geometry)) {
-    geometry <- st_transform(geometry, definitions$crs_reference)
-    area_m2 <- st_area(geometry)
-  } else {
-    area_m2 <- st_area(geometry)
-    geometry <- st_transform(geometry, definitions$crs_reference)
-  }
+  measured <- measure_fields(fields)
+  geometry <- measured$geometry
   centroids <- st_coordinates(st_centroid(geometry))
   # before tibble(), where `collection` would be the new column
   land_use <- classify_land_use(fields, collection)
@@ -140,7 +155,8 @@ reduce_collection <- function(collection) {
     id = fields$id,
     land_use = land_use,
     crop = if ("hcat:name" %in% names(fields)) fields$`hcat:name` else NA_character_,
-    area_ha = as.numeric(area_m2) / 1e4,
+    area_ha = measured$area_ha,
+    perimeter_m = measured$perimeter_m,
     x = centroids[, "X"],
     y = centroids[, "Y"]
   )
@@ -155,6 +171,38 @@ reduce_collection <- function(collection) {
 }
 
 walk(collections$collection, reduce_collection)
+
+# yearly editions for the time series --------------------------------------
+
+path_edition <- \(collection, year) {
+  str_glue("results/fields_ftw_{collection}-{year}.parquet")
+}
+
+reduce_edition <- function(collection, year) {
+  if (up_to_date(path_edition(collection, year), "perimeter_m")) {
+    return(invisible())
+  }
+  message(str_glue("{format(Sys.time(), '%H:%M')} {collection} {year}"))
+
+  fields <- read_fields_ftw(download_fields(collection, year))
+  measured <- measure_fields(fields)
+  land_use <- classify_land_use(fields, collection)
+
+  tibble(
+    collection = collection,
+    year = year,
+    id = fields$id,
+    land_use = land_use,
+    area_ha = measured$area_ha,
+    perimeter_m = measured$perimeter_m
+  ) |>
+    write_parquet(path_edition(collection, year))
+}
+
+definitions$field_time_series |>
+  bind_rows() |>
+  unnest(years) |>
+  pwalk(\(collection, years) reduce_edition(collection, years))
 
 # zoom polygons of all mapped collections in one file
 zoom_collections |>
