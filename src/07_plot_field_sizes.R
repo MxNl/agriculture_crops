@@ -8,8 +8,8 @@
 # - plots/field_size_area_share.png: share of farmland in fields up to a given
 #   size per state; the size where the curve crosses 50% is the size of the
 #   field the typical hectare lies in
-# - plots/field_size_zoom.png: the real field polygons in a few landscapes,
-#   coloured like the map
+# - plots/field_size_zoom.png: the real field polygons in windows chosen per
+#   unit at percentiles of the median field size, coloured like the map
 # - plots/field_size_by_crop.png: median field size per crop (DLR) and state
 # - plots/field_size_by_crop_ridges.png: field size distribution per crop
 #   (DLR), all states pooled
@@ -242,7 +242,7 @@ plot_size <- plot_hex_map(
   )
 )
 
-ggsave(
+save_plot(
   "plots/field_size_map.png",
   plot_size,
   width = 9, height = 11.5, dpi = 300, bg = "white"
@@ -354,7 +354,7 @@ plot_ratio <- wrap_elements(full = map_ratio) + ridges_ratio + plot_spacer() +
   ) &
   theme_legend_bottom()
 
-ggsave(
+save_plot(
   "plots/field_size_vs_median_map.png",
   plot_ratio,
   width = 17, height = 12.3, dpi = 300, bg = "white"
@@ -458,7 +458,7 @@ plot_share <- plot_curves + plot_medians +
     theme = theme_charts()
   )
 
-ggsave(
+save_plot(
   "plots/field_size_area_share.png",
   plot_share,
   width = 15, height = 8, dpi = 300, bg = "white"
@@ -466,23 +466,47 @@ ggsave(
 
 # 4. zoom windows -------------------------------------------------------------
 
-zoom_windows <- definitions$field_zoom_windows |>
-  bind_rows() |>
-  st_as_sf(coords = c("lon", "lat"), crs = 4326) |>
-  st_transform(definitions$crs_reference) |>
-  mutate(geometry = st_buffer(geometry, zoom_km * 500, endCapStyle = "SQUARE"))
+# windows chosen from the data, not by hand: per unit the hexagons at the
+# field_zoom_percentiles of the median field size, among the hexagons that
+# are mostly farmland and whose fields all come from one collection
+zoom_percentiles <- definitions$field_zoom_percentiles
+hex_area_ha <- definitions$field_hex_km2 * 100
 
-zoom_fields <- st_read("results/fields_ftw_zoom.gpkg", quiet = TRUE) |>
-  filter(land_use != "other", area_ha >= min_ha) |>
-  left_join(collections |> select(collection, short, unit), by = "collection")
+hex_units <- fields |>
+  count(hex, collection, unit, short, state, wt = area_ha, name = "farm_ha") |>
+  group_by(hex) |>
+  filter(n() == 1) |>
+  ungroup() |>
+  inner_join(hex_stats |> st_drop_geometry() |> select(hex, median_ha), by = "hex") |>
+  filter(farm_ha / hex_area_ha >= definitions$field_zoom_min_farmland)
 
-plot_zoom_window <- function(window) {
+# per unit and percentile the hexagon whose median is closest (log scale)
+zoom_windows <- hex_units |>
+  group_by(unit) |>
+  reframe(
+    percentile = zoom_percentiles,
+    hex = map_int(zoom_percentiles, \(q) {
+      target <- quantile(median_ha, q)
+      hex[which.min(abs(log(median_ha) - log(target)))]
+    })
+  ) |>
+  left_join(hex_units |> select(hex, collection, short, state), by = "hex") |>
+  mutate(
+    # rows from small to large polygons, as the columns
+    unit = fct_relevel(unit, "reference parcel", "field", "field block"),
+    window = map(hex, \(h) {
+      st_buffer(st_centroid(hexagons[h]), zoom_km * 500, endCapStyle = "SQUARE")
+    })
+  )
+
+plot_zoom_window <- function(collection, state, window) {
+  window <- st_sfc(window, crs = definitions$crs_reference)
   bbox <- st_bbox(window)
-  in_window <- zoom_fields |>
-    filter(lengths(st_intersects(geom, window)) > 0)
-  # fields whose centroid lies in the window
+  in_window <- read_fields_window(collection, window) |>
+    filter(land_use != "other", area_ha >= min_ha)
+  # median of the fields whose centroid lies in the window
   centred <- in_window |>
-    filter(x >= bbox$xmin, x <= bbox$xmax, y >= bbox$ymin, y <= bbox$ymax)
+    filter(lengths(st_within(st_centroid(geometry), window)) > 0)
 
   ggplot(in_window) +
     geom_sf(aes(fill = area_ha), colour = "white", linewidth = 0.1) +
@@ -494,42 +518,79 @@ plot_zoom_window <- function(window) {
       datum = NA
     ) +
     labs(
-      title = window$label,
-      subtitle = str_c(
-        first(centred$short), " ", unit_labels[as.character(first(centred$unit))],
-        ", median ", label_ha(median(centred$area_ha))
-      )
+      title = state,
+      subtitle = str_c("median ", label_ha(median(centred$area_ha)))
     ) +
     theme_maps() +
     theme(
-      # like the facet strips of the crop maps
-      plot.title = element_text(size = rel(1), margin = margin(b = 2)),
-      plot.subtitle = element_text(size = rel(0.85), margin = margin(b = 6)),
+      plot.title = element_text(size = rel(0.9), margin = margin(b = 2)),
+      plot.subtitle = element_text(size = rel(0.8), margin = margin(b = 6)),
       panel.background = element_rect(fill = "grey95", colour = NA),
-      plot.margin = margin(6, 8, 6, 8)
+      plot.margin = margin(4, 8, 4, 8)
     )
 }
 
-plot_zoom <- zoom_windows |>
-  split(seq_len(nrow(zoom_windows))) |>
-  map(plot_zoom_window) |>
-  wrap_plots(ncol = 3) +
+zoom_panels <- zoom_windows |>
+  arrange(unit, percentile) |>
+  select(collection, state, window) |>
+  pmap(plot_zoom_window)
+
+# row labels (units) and column headers (percentiles) as text cells
+text_cell <- function(label, rot = 0, y = 0.5) {
+  wrap_elements(full = grid::textGrob(
+    label,
+    rot = rot,
+    y = y,
+    gp = grid::gpar(fontsize = 13, fontface = "bold", lineheight = 1.1)
+  ))
+}
+column_headers <- str_c(
+  c("Small", "Typical", "Large")[seq_along(zoom_percentiles)],
+  "\n(", scales::label_ordinal()(100 * zoom_percentiles), " percentile)"
+)
+if (length(zoom_percentiles) != 3) {
+  column_headers <- str_c(scales::label_ordinal()(100 * zoom_percentiles), " percentile")
+}
+row_labels <- str_to_sentence(unit_labels[levels(zoom_windows$unit)])
+
+n_col <- length(zoom_percentiles)
+cells <- c(
+  list(plot_spacer()),
+  # headers in the upper part of their row, away from the panel titles
+  map(column_headers, \(label) text_cell(label, y = 0.62)),
+  zoom_panels |>
+    split(rep(seq_along(row_labels), each = n_col)) |>
+    map2(row_labels, \(row, label) c(list(text_cell(label, rot = 90)), row)) |>
+    list_flatten()
+)
+
+plot_zoom <- wrap_plots(
+  cells,
+  ncol = n_col + 1,
+  widths = c(0.12, rep(1, n_col)),
+  heights = c(0.2, rep(1, length(row_labels)))
+) +
   plot_layout(guides = "collect") +
   plot_annotation(
     title = "What field sizes look like",
-    subtitle = str_glue(
+    subtitle = str_wrap(str_glue(
       "Agricultural polygons in {zoom_km} \u00D7 {zoom_km} km windows, ",
-      "coloured by size as in the map; grey = no agricultural polygon."
-    ),
+      "coloured by size as in the map; grey = no agricultural polygon. ",
+      "Windows chosen from the data: per row the hexagons at the ",
+      "{str_flatten_comma(scales::label_ordinal()(100 * zoom_percentiles), ' and ')} ",
+      "percentile of the median polygon size, among the hexagons with ",
+      "\u2265 {scales::label_percent()(definitions$field_zoom_min_farmland)} ",
+      "farmland."
+    ), 110),
     caption = str_wrap(caption_fields, 140),
     theme = theme_maps()
   ) &
   theme_legend_bottom()
 
-ggsave(
+save_plot(
   "plots/field_size_zoom.png",
   plot_zoom,
-  width = 12, height = 9.5, dpi = 300, bg = "white"
+  width = 12, height = 13, dpi = 300, bg = "white"
 )
 
 # 5. field size by crop -----------------------------------------------------
@@ -629,7 +690,7 @@ plot_crop <- crop_medians |>
   ) +
   theme_legend_bottom()
 
-ggsave(
+save_plot(
   "plots/field_size_by_crop.png",
   plot_crop,
   width = 12, height = 9, dpi = 300, bg = "white"
@@ -694,7 +755,7 @@ plot_crop_ridges <- crop_ridges |>
       "line and label: median. Crops grown mainly in the states with field ",
       "blocks (SH, SN, ST, TH) look larger partly because blocks hold ",
       "several fields."
-    ), 120),
+    ), 112),
     caption = str_c(
       str_wrap(caption_fields, 140), "\n",
       str_remove(caption, " Borders: Natural Earth\\.")
@@ -712,7 +773,7 @@ plot_crop_ridges <- crop_ridges |>
     plot.subtitle = element_text(margin = margin(t = 12, b = 4))
   )
 
-ggsave(
+save_plot(
   "plots/field_size_by_crop_ridges.png",
   plot_crop_ridges,
   width = 12, height = 10, dpi = 300, bg = "white"
@@ -828,7 +889,7 @@ plot_crop_mix <- crop_mix_rects |>
     plot.subtitle = element_text(margin = margin(t = 12, b = 12))
   )
 
-ggsave(
+save_plot(
   "plots/field_size_crop_mix.png",
   plot_crop_mix,
   width = 13, height = 9, dpi = 300, bg = "white"
@@ -907,7 +968,7 @@ plot_edges <- wrap_elements(full = map_edges) + bars_edges + plot_spacer() +
   ) &
   theme_legend_bottom()
 
-ggsave(
+save_plot(
   "plots/field_size_edges_map.png",
   plot_edges,
   width = 17, height = 12.3, dpi = 300, bg = "white"
@@ -1009,7 +1070,7 @@ plot_bivariate <- map_bivariate +
     theme = theme_maps()
   )
 
-ggsave(
+save_plot(
   "plots/field_size_crop_diversity_map.png",
   plot_bivariate,
   width = 10, height = 12.5, dpi = 300, bg = "white"
@@ -1165,7 +1226,7 @@ plot_time <- plot_time_lines + plot_time_ridges +
       )
   )
 
-ggsave(
+save_plot(
   "plots/field_size_time_series.png",
   plot_time,
   width = 15, height = 10, dpi = 300, bg = "white"

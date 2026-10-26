@@ -281,7 +281,7 @@ walk(years, \(year) {
       caption = caption
     )
 
-  ggsave(
+  save_plot(
     str_glue("plots/top{top_n}_crops_germany_{year}.png"),
     plot,
     width = 16, height = 6.5, dpi = 300, bg = "white"
@@ -345,7 +345,7 @@ plot_grid <- wrap_plots(map_rows, ncol = 1) +
     theme = theme_maps()
   )
 
-ggsave(
+save_plot(
   str_glue(
     "plots/top{top_n}_crops_germany_{str_flatten(grid_years, '-')}_grid.png"
   ),
@@ -355,7 +355,7 @@ ggsave(
 
 # ranking chart: rank and area of the largest crops over all years ----------
 
-ggsave(
+save_plot(
   str_glue(
     "plots/top{ranking_top_n}_crops_germany_{min(years)}-{max(years)}_ranking.png"
   ),

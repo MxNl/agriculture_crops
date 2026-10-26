@@ -104,12 +104,19 @@ field_time_series:
   - {collection: de_bb, years: [2010, 2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2026]}
   - {collection: de_nrw, years: [2019, 2020, 2021, 2022, 2023, 2026]}
 
-# zoom windows with the real field polygons: centre (WGS84) and edge length
+# zoom windows with the real field polygons: per unit (fields, reference
+# parcels, field blocks) the hexagons at these percentiles of the median field
+# size, among the hexagons whose farmland share is at least
+# field_zoom_min_farmland and whose fields all come from one state; window
+# edge length in km
 field_zoom_km: 4
-field_zoom_windows:
-  - {label: "Uckermark", lon: 13.80, lat: 53.30}
-  - {label: "Magdeburg Börde", lon: 11.40, lat: 52.05}
-  - {label: "Hildesheim Börde", lon: 10.12, lat: 52.22}
-  - {label: "Münsterland", lon: 7.55, lat: 51.95}
-  - {label: "Lower Franconia", lon: 10.05, lat: 49.65}
-  - {label: "Vogelsberg", lon: 9.20, lat: 50.55}
+field_zoom_percentiles: [0.1, 0.5, 0.9]
+field_zoom_min_farmland: 0.6
+
+# text around the plots (field size plots and crop maps): show the title,
+# subtitle and caption, and align title and subtitle "center" or "left"
+plot_text:
+  title: true
+  subtitle: true
+  caption: true
+  align: center
