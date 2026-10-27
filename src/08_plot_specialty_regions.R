@@ -38,7 +38,17 @@ cell_px <- round(definitions$specialty_cell_km * 1000 / search_res)
 window_cells <- definitions$specialty_window_km / definitions$specialty_cell_km
 
 dir.create("cache/thuenen", showWarnings = FALSE, recursive = TRUE)
-path_search <- str_glue("cache/thuenen/ctm_{ctm_year}_{search_res}m.tif")
+# the search runs in the reference CRS (metres), whatever the CRS of the map
+crs_search <- str_c("EPSG:", definitions$crs_reference)
+path_search <- str_glue(
+  "cache/thuenen/ctm_{ctm_year}_{search_res}m_epsg{definitions$crs_reference}.tif"
+)
+
+# the map's GeoTIFF keys define ETRS89 slightly differently from the EPSG
+# registry; use the registry (as GDAL suggests), which also silences its
+# warning
+gdal_config <- c(GTIFF_SRS_SOURCE = "EPSG")
+Sys.setenv(GTIFF_SRS_SOURCE = "EPSG")
 
 caption_ctm <- str_c(
   "Data: Th\u00FCnen crop type map ", ctm_year, " (v302; Blickensd\u00F6rfer ",
@@ -77,12 +87,14 @@ candidate_codes <- setdiff(farmland_codes, definitions$specialty_excluded)
 
 if (!file.exists(path_search)) {
   message(str_glue("{format(Sys.time(), '%H:%M')} resampling to {search_res} m"))
+  # gdalwarp reads from the overview closest to the target resolution
   sf::gdal_utils(
-    "translate", ctm_source, path_search,
+    "warp", ctm_source, path_search,
     options = c(
-      "-tr", search_res, search_res, "-r", "nearest",
+      "-t_srs", crs_search, "-tr", search_res, search_res, "-r", "near",
       "-co", "COMPRESS=DEFLATE", "-co", "TILED=YES"
-    )
+    ),
+    config_options = gdal_config
   )
 }
 
@@ -201,14 +213,7 @@ windows <- select_windows(candidates) |>
   left_join(ctm_legend, by = "code")
 
 # nearest place for the panel titles (Natural Earth populated places)
-places <- rnaturalearth::ne_download(
-  scale = 10,
-  type = "populated_places",
-  category = "cultural",
-  destdir = "cache/naturalearth",
-  load = file.exists("cache/naturalearth/ne_10m_populated_places.gpkg"),
-  returnclass = "sf"
-) |>
+places <- read_naturalearth("populated_places") |>
   filter(ADM0_A3 == "DEU") |>
   st_transform(crs(ctm_search))
 
@@ -233,13 +238,22 @@ windows$place <- if_else(
 # 4. panels and overview map -------------------------------------------------
 
 ctm_full <- rast(ctm_source)
-max_plot_px <- 800 # larger windows are aggregated (modal) for plotting
+max_plot_px <- 800 # larger windows are resampled to this many pixels
 
+# window (extent in the search CRS) at full resolution: cut from the map in
+# its own CRS with a margin, then warped to the search CRS (nearest
+# neighbour) on a grid of at most max_plot_px pixels
 read_window <- function(extent) {
-  r <- crop(ctm_full, extent)
-  if (ncol(r) > max_plot_px) {
-    r <- aggregate(r, ceiling(ncol(r) / max_plot_px), fun = "modal")
-  }
+  size <- xmax(extent) - xmin(extent)
+  res_out <- max(10, size / max_plot_px)
+  template <- rast(extent, resolution = res_out, crs = crs_search)
+  margin <- st_bbox(st_buffer(st_as_sfc(st_bbox(
+    c(xmin = xmin(extent), ymin = ymin(extent), xmax = xmax(extent), ymax = ymax(extent)),
+    crs = st_crs(crs_search)
+  )), size * 0.1))
+  window_source <- st_bbox(st_transform(st_as_sfc(margin), crs(ctm_full)))
+  r <- crop(ctm_full, ext(window_source[c("xmin", "xmax", "ymin", "ymax")]))
+  r <- project(r, template, method = "near")
   as.data.frame(r, xy = TRUE, na.rm = TRUE) |>
     as_tibble() |>
     set_names(c("x", "y", "code")) |>

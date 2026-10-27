@@ -89,14 +89,25 @@ crop_values <- legend |>
 
 # state borders for orientation ----------------------------------------------
 
-states <- rnaturalearth::ne_download(
-  scale = 10,
-  type = "admin_1_states_provinces",
-  category = "cultural",
-  destdir = "cache/naturalearth",
-  load = file.exists("cache/naturalearth/ne_10m_admin_1_states_provinces.gpkg"),
-  returnclass = "sf"
-) |>
+# Natural Earth layer (1:10 m, cultural), downloaded into cache/ once.
+# ne_download() returns only the file name when it downloads, so the layer is
+# always read with ne_load() afterwards
+read_naturalearth <- function(type) {
+  destdir <- "cache/naturalearth"
+  dir.create(destdir, showWarnings = FALSE, recursive = TRUE)
+  args <- list(scale = 10, type = type, category = "cultural", destdir = destdir)
+  loaded <- try(
+    do.call(rnaturalearth::ne_load, c(args, returnclass = "sf")),
+    silent = TRUE
+  )
+  if (inherits(loaded, "try-error")) {
+    do.call(rnaturalearth::ne_download, c(args, load = FALSE))
+    loaded <- do.call(rnaturalearth::ne_load, c(args, returnclass = "sf"))
+  }
+  loaded
+}
+
+states <- read_naturalearth("admin_1_states_provinces") |>
   filter(adm0_a3 == "DEU") |>
   st_transform(definitions$crs_reference)
 
