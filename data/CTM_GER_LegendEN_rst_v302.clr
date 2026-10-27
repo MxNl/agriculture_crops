@@ -1,0 +1,25 @@
+200 105 194 41 255 Permanent grassland
+1101 251 251 22 255 Winter wheat
+1102 228 206 63 255 Winter barley
+1103 234 127 18 255 Winter rye
+1201 194 75 45 255 Spring barley
+1202 180 23 23 255 Spring oat
+1300 55 237 216 255 Maize
+1401 195 125 238 255 Potato
+1402 154 12 238 255 Sugar beet
+1501 238 67 156 255 Winter rapeseed
+1502 227 0 247 255 Sunflower
+1602 145 255 0 255 Cultivated grassland
+1603 251 33 17 255 Vegetables
+1611 94 176 132 255 Peas
+1612 91 240 158 255 Broad bean
+1613 157 245 163 255 Lupin
+1614 212 237 177 255 Soy
+3001 5 131 5 255 Small woody features
+3002 212 212 212 255 Other agricultural areas
+3003 178 206 68 255 Fallow land
+3004 111 111 111 255 Other areas
+3011 13 74 7 255 Small woody features on other land
+4001 130 128 186 255 Grapevine
+4002 74 20 134 255 Hops
+4003 106 81 163 255 Orchard
