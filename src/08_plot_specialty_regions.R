@@ -102,19 +102,6 @@ ctm_legend <- ctm_legend |>
   mutate(colour = coalesce(dlr_colour, colour)) |>
   select(-dlr_colour)
 
-# fill scale in the legend colours; breaks: codes shown in the legend
-scale_fill_ctm <- function(breaks = waiver()) {
-  scale_fill_manual(
-    values = set_names(ctm_legend$colour, ctm_legend$code),
-    labels = \(codes) ctm_legend$class[match(codes, ctm_legend$code)],
-    breaks = breaks,
-    # the same limits in all panels, so patchwork merges their legends
-    limits = as.character(ctm_legend$code),
-    drop = FALSE,
-    name = NULL
-  )
-}
-
 farmland_codes <- setdiff(ctm_legend$code, definitions$specialty_non_farmland)
 candidate_codes <- setdiff(farmland_codes, definitions$specialty_excluded)
 
@@ -235,7 +222,13 @@ select_regions <- function(regions) {
 
 # window: the region plus specialty_context of its size on each side, so the
 # region stands out against its surroundings; whole km, within the limits
+# order: crops by their most specialised region (highest location quotient),
+# the regions of a crop by area
 windows <- select_regions(regions) |>
+  group_by(code) |>
+  mutate(crop_lq = max(lq)) |>
+  ungroup() |>
+  arrange(desc(crop_lq), desc(crop_ha)) |>
   mutate(
     number = row_number(),
     window_km = pmin(
@@ -303,26 +296,35 @@ read_window <- function(extent) {
 
 windows$cells <- map(windows$extent, read_window)
 
-# classes shown in the legend: those that cover at least 1% of a panel
-shown_codes <- windows$cells |>
-  map(\(cells) {
-    cells |>
-      count(code) |>
-      filter(n / sum(n) >= 0.01) |>
-      pull(code) |>
-      as.character()
-  }) |>
-  unlist() |>
-  unique()
-legend_breaks <- intersect(as.character(ctm_legend$code), shown_codes)
+# only the specialty crop of a panel in its colour, all other classes in grey
+# shades (lightness of their own colour), so the crop stands out
+grey_of <- function(colour) {
+  lightness <- farver::decode_colour(colour, to = "lab")[, "l"]
+  grey(scales::rescale(lightness, to = c(0.45, 0.9), from = c(0, 100)))
+}
+ctm_legend$grey <- grey_of(ctm_legend$colour)
 
-plot_window <- function(number, class, place, window_km, share, lq, crop_ha, cells, ...) {
-  ggplot(cells, aes(x, y, fill = code)) +
+plot_window <- function(number, code, class, place, window_km, share, lq, crop_ha,
+                        cells, extent, ...) {
+  focus <- code
+  cells <- cells |>
+    mutate(
+      fill = if_else(
+        as.integer(as.character(code)) == focus,
+        ctm_legend$colour[match(focus, ctm_legend$code)],
+        ctm_legend$grey[match(as.integer(as.character(code)), ctm_legend$code)]
+      )
+    )
+
+  ggplot(cells, aes(x, y, fill = fill)) +
     geom_raster() +
-    # the legend is drawn once, by the overview map
-    scale_fill_ctm(breaks = legend_breaks) +
-    guides(fill = "none") +
-    coord_equal(expand = FALSE) +
+    scale_fill_identity() +
+    # the full window, also where it has no data (outside Germany)
+    coord_equal(
+      xlim = c(xmin(extent), xmax(extent)),
+      ylim = c(ymin(extent), ymax(extent)),
+      expand = FALSE
+    ) +
     labs(
       title = str_c(number, "  ", class),
       subtitle = str_glue(
@@ -336,7 +338,7 @@ plot_window <- function(number, class, place, window_km, share, lq, crop_ha, cel
     theme(
       plot.title = element_text(size = rel(0.95), hjust = 0, margin = margin(b = 2)),
       plot.subtitle = element_text(size = rel(0.75), hjust = 0, lineheight = 1.1, margin = margin(b = 6)),
-      panel.background = element_rect(fill = "grey95", colour = NA),
+      panel.background = element_rect(fill = "white", colour = "grey80", linewidth = 0.3),
       plot.margin = margin(4, 8, 4, 8)
     )
 }
@@ -346,19 +348,29 @@ panels <- windows |> pmap(plot_window)
 states_ctm <- st_transform(states, crs(ctm_search))
 legend_anchor <- st_coordinates(st_centroid(st_union(states_ctm)))
 
+# legend: the specialty crops of the panels and the grey shades of the rest
+legend_items <- windows |>
+  distinct(code, class) |>
+  left_join(ctm_legend |> select(code, colour), by = "code") |>
+  add_row(
+    code = NA, class = "Other crops and land (grey shades)",
+    colour = grey(0.7)
+  ) |>
+  mutate(key = fct_inorder(str_wrap(class, 22)))
+
 overview <- ggplot() +
   geom_sf(data = states_ctm, fill = "grey95", colour = "grey70", linewidth = 0.2) +
   # invisible points (size 0) that carry the legend of all panels
   geom_point(
-    aes(x, y, fill = code),
-    data = tibble(
-      x = legend_anchor[1], y = legend_anchor[2],
-      code = factor(legend_breaks, levels = ctm_legend$code)
-    ),
+    aes(x, y, fill = key),
+    data = legend_items |> mutate(x = legend_anchor[1], y = legend_anchor[2]),
     shape = 22, size = 0, stroke = 0
   ) +
-  scale_fill_ctm(breaks = legend_breaks) +
-  guides(fill = guide_legend(ncol = 2, override.aes = list(size = 5))) +
+  scale_fill_manual(
+    values = set_names(legend_items$colour, legend_items$key),
+    name = NULL
+  ) +
+  guides(fill = guide_legend(ncol = 1, override.aes = list(size = 6))) +
   geom_sf(data = window_polygons, fill = NA, colour = "grey15", linewidth = 0.5) +
   # numbers above the frames, with some space
   geom_label(
@@ -377,22 +389,23 @@ overview <- ggplot() +
   ) +
   coord_sf(datum = NA) +
   theme_maps() +
-  theme(plot.margin = margin(4, 12, 4, 4))
+  theme(plot.margin = margin(4, 4, 4, 12))
 
-# first column: overview map on top, the legend below; panels in 3 columns
+# panels in 3 columns; last column: overview map on top, the legend below
 n_panel_cols <- 3
 n_panel_rows <- max(2, ceiling(length(panels) / n_panel_cols))
+side_col <- n_panel_cols + 1
 # patchwork::area(), terra has an area() too
 design <- c(
-  patchwork::area(1, 1, n_panel_rows - 1, 1),
-  patchwork::area(n_panel_rows, 1, n_panel_rows, 1),
+  patchwork::area(1, side_col, n_panel_rows - 1, side_col),
+  patchwork::area(n_panel_rows, side_col, n_panel_rows, side_col),
   map(seq_along(panels), \(i) {
-    patchwork::area((i - 1) %/% n_panel_cols + 1, (i - 1) %% n_panel_cols + 2)
+    patchwork::area((i - 1) %/% n_panel_cols + 1, (i - 1) %% n_panel_cols + 1)
   }) |> do.call(what = c)
 )
 
 plot_specialty <- wrap_plots(c(list(overview, guide_area()), panels), design = design) +
-  plot_layout(widths = c(1.4, rep(1, n_panel_cols)), guides = "collect") +
+  plot_layout(widths = c(rep(1, n_panel_cols), 1.4), guides = "collect") +
   plot_annotation(
     title = "Regions specialised in one crop",
     subtitle = str_wrap(str_glue(
@@ -401,8 +414,10 @@ plot_specialty <- wrap_plots(c(list(overview, guide_area()), panels), design = d
       "\u2265 {scales::label_percent()(definitions$specialty_cell_share)} of the ",
       "farmland and \u2265 {definitions$specialty_min_lq}\u00D7 the German share, ",
       "the largest per crop (at most {definitions$specialty_max_per_crop}). ",
-      "Windows show the region and its surroundings, sizes differ. Numbers ",
-      "as on the map; colours of the crops as in the DLR crop maps."
+      "Windows show the region and its surroundings, sizes differ; the ",
+      "specialty crop in colour (as in the DLR crop maps), all other classes ",
+      "in grey. Ordered by crop (most specialised first) and region area; ",
+      "numbers as on the map."
     ), 130),
     caption = caption_ctm,
     theme = theme_maps()
