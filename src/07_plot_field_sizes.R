@@ -1098,9 +1098,10 @@ plot_time_lines <- time_stats |>
 # size distribution of the arable fields per year, both states in one column
 plot_time_ridges <- time_series |>
   filter(land_use == "arable") |>
-  ggplot(aes(area_ha, factor(year), fill = short)) +
+  ggplot(aes(area_ha, factor(year), fill = short, vline_colour = short)) +
   ggridges::geom_density_ridges(
     colour = "white",
+    vline_width = 0.8,
     bandwidth = 0.08,
     scale = 1.6,
     rel_min_height = 0.005,
@@ -1110,6 +1111,7 @@ plot_time_ridges <- time_series |>
     quantiles = 2
   ) +
   scale_fill_manual(values = time_colours, guide = "none") +
+  scale_discrete_manual("vline_colour", values = time_colours, guide = "none") +
   scale_x_log10(breaks = c(0.1, 1, 10, 100), labels = label_ha_short, expand = expansion(0)) +
   scale_y_discrete(expand = expansion(add = c(0.2, 2))) +
   coord_cartesian(xlim = c(0.1, 300)) +
