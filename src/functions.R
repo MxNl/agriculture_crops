@@ -289,3 +289,172 @@ read_fields_ftw <- function(path_raw) {
     )
   )
 }
+
+# land use --------------------------------------------------------------------
+
+# each collection codes land use differently; mapped to arable, grassland,
+# permanent crops or other (landscape elements, forest, non-agricultural)
+land_use_groups <- c("arable", "grassland", "permanent crops", "other")
+
+classify_land_use <- function(fields, collection) {
+  land_use <- switch(
+    collection,
+    # HCAT codes: 3301 arable crops, 3302 grassland, 3303 permanent crops
+    de_bb = , de_nds = , de_nrw = case_match(
+      fields$`hcat:code` %/% 1e6,
+      3301 ~ "arable",
+      3302 ~ "grassland",
+      3303 ~ "permanent crops"
+    ),
+    de_by_block = , de_he = , de_st = case_match(
+      fields$`crop:name`,
+      "Ackerland" ~ "arable",
+      "Dauergr\u00FCnland" ~ "grassland",
+      "Dauerkultur" ~ "permanent crops"
+    ),
+    de_sh = case_match(
+      fields$hbn,
+      "Ackerland" ~ "arable",
+      "Dauergr\u00FCnland" ~ "grassland",
+      "Dauerkulturen" ~ "permanent crops"
+    ),
+    # crop groups of the application; landscape elements and other areas
+    # are not fields
+    de_sl = case_match(
+      fields$name,
+      "Dauergr\u00FCnland" ~ "grassland",
+      "Dauerkulturen" ~ "permanent crops",
+      c(
+        "Greening/Greening-Landschaftselemente", "Sonstige Fl\u00E4chen",
+        "Stilllegung/ Aufforstung"
+      ) ~ "other",
+      .default = "arable"
+    ),
+    # AL arable, GL grassland, OD fruit, RF vineyards, HO hops
+    de_sax = case_match(
+      fields$FB_BN_KAT,
+      "AL" ~ "arable",
+      "GL" ~ "grassland",
+      c("OD", "RF", "HO") ~ "permanent crops"
+    ),
+    de_th = case_match(
+      fields$bnk,
+      "AL" ~ "arable",
+      "GL" ~ "grassland",
+      "DK" ~ "permanent crops"
+    ),
+    # AL arable (AF: agroforestry), GL grassland (ELP: local practice, MO: moor),
+    # DK permanent crops
+    de_bb_block = case_when(
+      str_starts(fields$hbn, "AL") ~ "arable",
+      str_starts(fields$hbn, "GL") ~ "grassland",
+      fields$hbn == "DK" ~ "permanent crops"
+    ),
+    de_nds_block = case_when(
+      fields$bnk_txt == "Ackerland" ~ "arable",
+      str_starts(fields$bnk_txt, "Gr\u00FCnland") ~ "grassland",
+      str_starts(fields$bnk_txt, "Dauerkulturen") ~ "permanent crops"
+    ),
+    stop("No land use mapping for collection ", collection)
+  )
+
+  coalesce(land_use, "other")
+}
+
+# area (ha) and perimeter (m) in the source CRS if it is projected (UTM zone
+# of the state), otherwise in the reference CRS; geometry in the reference CRS
+measure_fields <- function(fields) {
+  geometry <- st_geometry(fields)
+  if (st_is_longlat(geometry)) {
+    geometry <- st_transform(geometry, definitions$crs_reference)
+  }
+  measured <- list(
+    area_ha = as.numeric(st_area(geometry)) / 1e4,
+    # length of the outline (st_perimeter() would need lwgeom)
+    perimeter_m = as.numeric(st_length(st_boundary(geometry))),
+    geometry = st_transform(geometry, definitions$crs_reference)
+  )
+  measured
+}
+
+# polygons of a collection that intersect a window (bbox in the reference
+# CRS), read via the bbox column without loading the whole file; with land
+# use, area (ha) and geometry in the reference CRS
+read_fields_window <- function(collection, window) {
+  path_raw <- download_fields(collection)
+  geo <- jsonlite::fromJSON(arrow::open_dataset(path_raw)$metadata$geo)
+  crs_source <- st_crs(str_c("EPSG:", geo$columns$geometry$crs$id$code))
+  box <- st_bbox(st_transform(st_geometry(window), crs_source))
+
+  fields <- arrow::open_dataset(path_raw) |>
+    filter(
+      bbox$xmax >= box[["xmin"]], bbox$xmin <= box[["xmax"]],
+      bbox$ymax >= box[["ymin"]], bbox$ymin <= box[["ymax"]]
+    ) |>
+    select(-bbox) |>
+    collect()
+
+  fields <- st_sf(
+    select(fields, -geometry),
+    geometry = st_as_sfc(
+      structure(as.list(fields$geometry), class = "WKB"),
+      crs = crs_source
+    )
+  )
+  measured <- measure_fields(fields)
+
+  st_sf(
+    land_use = classify_land_use(fields, collection),
+    area_ha = measured$area_ha,
+    geometry = measured$geometry
+  )
+}
+
+# text around the plots ------------------------------------------------------
+
+# plot_text in definitions.yml: show title, subtitle and caption, and align
+# title and subtitle centre or left. Works on ggplots and on patchworks
+# (whose text is in plot_annotation())
+apply_plot_text <- function(plot) {
+  settings <- definitions$plot_text %||% list()
+  show <- \(x) isTRUE(settings[[x]] %||% TRUE)
+  hjust <- if (identical(settings$align, "left")) 0 else 0.5
+
+  # set hjust (and halign of markdown elements) of title and subtitle,
+  # keeping the class and all other properties of the elements
+  align <- function(theme) {
+    elements <- c("plot.title", "plot.subtitle") |>
+      set_names() |>
+      map(\(name) {
+        element <- theme[[name]]
+        if (!inherits(element, "element_text")) element <- element_text()
+        element$hjust <- hjust
+        if (!is.null(element$halign)) element$halign <- hjust
+        element
+      })
+    position <- if (hjust == 0) "plot" else "panel"
+    theme + do.call(theme_fn, c(elements, list(plot.title.position = position)))
+  }
+  theme_fn <- ggplot2::theme
+
+  hidden <- c("title", "subtitle", "caption") |> discard(show)
+
+  if (inherits(plot, "patchwork")) {
+    annotation <- plot$patches$annotation
+    for (x in hidden) annotation[x] <- list(NULL)
+    annotation$theme <- align(annotation$theme %||% theme_fn())
+    plot$patches$annotation <- annotation
+    plot
+  } else {
+    if (length(hidden) > 0) {
+      plot <- plot + do.call(labs, set_names(rep(list(NULL), length(hidden)), hidden))
+    }
+    plot$theme <- align(plot$theme %||% theme_fn())
+    plot
+  }
+}
+
+# ggsave() with the plot_text settings applied
+save_plot <- function(filename, plot, ...) {
+  ggsave(filename, apply_plot_text(plot), ...)
+}

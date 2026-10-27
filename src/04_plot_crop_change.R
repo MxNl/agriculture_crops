@@ -155,7 +155,7 @@ plot_change <- plot_crop_maps(
   )
 )
 
-ggsave(
+save_plot(
   str_glue(
     "plots/crop_change_{min(period_first)}-{max(period_first)}_vs_",
     "{min(period_second)}-{max(period_second)}.png"
@@ -215,7 +215,7 @@ plot_repeat <- plot_crop_maps(
   )
 )
 
-ggsave(
+save_plot(
   str_glue("plots/crop_repeat_{span}.png"),
   plot_repeat,
   width = 16, height = 7, dpi = 300, bg = "white"
@@ -335,7 +335,7 @@ plot_rotation <- rotation |>
     plot.background = element_rect(fill = "white", colour = NA)
   )
 
-ggsave(
+save_plot(
   str_glue("plots/crop_rotation_{span}.png"),
   plot_rotation,
   width = 12, height = 9, dpi = 300, bg = "white"
