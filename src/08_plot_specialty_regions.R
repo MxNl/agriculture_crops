@@ -5,17 +5,18 @@
 # 1. the map is resampled to specialty_search_res_m (GDAL uses the overviews of
 #    the cloud-optimised GeoTIFF) and its classes are counted per
 #    specialty_cell_km cell
-# 2. for every crop and window size (specialty_window_km) the share of the
-#    crop in the farmland of the window and its location quotient (LQ =
-#    share in the window / share in Germany) are computed with summed-area
-#    tables; score = share * log(LQ), so a window must be dominated by a crop
-#    that is rare nationally
-# 3. greedy selection: the best window, enlarged as long as the crop share
-#    stays above specialty_keep_share of the best share; then the next best
-#    window at least specialty_min_distance_km away, at most
-#    specialty_max_per_crop windows per crop
-# 4. the windows are read at full resolution and shown as panels, next to a
-#    map of Germany with the numbered windows
+# 2. core cells of a crop: at least specialty_cell_share of the farmland and
+#    specialty_min_lq times its share in Germany (location quotient), so the
+#    crop is both dominant and rare nationally. Neighbouring core cells
+#    (gaps of one cell bridged) form a region; regions need
+#    specialty_min_region_ha of the crop
+# 3. greedy selection by crop area x share: at most specialty_max_per_crop
+#    regions per crop, centres at least specialty_min_distance_km apart. The
+#    window covers the region plus specialty_context of its size on each
+#    side, for the contrast with the surroundings
+# 4. the windows are read (GDAL picks the overview that fits the plot
+#    resolution) and shown as panels, next to a map of Germany with the
+#    numbered windows
 #
 # - plots/specialty_regions_<year>.png
 #
@@ -35,7 +36,6 @@ ctm_year <- definitions$thuenen_year
 
 search_res <- definitions$specialty_search_res_m
 cell_px <- round(definitions$specialty_cell_km * 1000 / search_res)
-window_cells <- definitions$specialty_window_km / definitions$specialty_cell_km
 
 dir.create("cache/thuenen", showWarnings = FALSE, recursive = TRUE)
 # the search runs in the reference CRS (metres), whatever the CRS of the map
@@ -66,6 +66,41 @@ ctm_legend <- read_lines(definitions$thuenen_legend) |>
     class,
     colour = rgb(as.integer(r), as.integer(g), as.integer(b), maxColorValue = 255)
   )
+
+# colours of the matching DLR classes (functions.R), so a crop looks the same
+# in all plots; classes without a DLR counterpart keep the Thuenen colour.
+# Classes that share a DLR class get a shade of its colour
+ctm_to_dlr <- tribble(
+  ~code, ~value, ~shade,
+  200L,  83L,  0,   # permanent grassland
+  1101L, 11L,  0,   # winter wheat
+  1102L, 12L,  0,   # winter barley
+  1103L, 13L,  0,   # winter rye
+  1201L, 22L,  0,   # spring barley
+  1202L, 23L,  0,   # spring oat
+  1300L, 30L,  0,   # maize
+  1401L, 50L,  0,   # potato
+  1402L, 60L,  0,   # sugar beet
+  1501L, 71L,  0,   # winter rapeseed
+  1502L, 72L,  0,   # sunflower
+  1602L, 84L,  0,   # cultivated grassland (DLR forage)
+  1603L, 120L, 0,   # vegetables
+  1611L, 40L,  0,   # peas (DLR legumes)
+  1612L, 40L,  25,  # broad bean (DLR legumes, darker)
+  1613L, 42L,  0,   # lupin
+  1614L, 41L,  0,   # soy
+  3002L, 111L, 0,   # other agricultural areas
+  4001L, 90L,  0,   # grapevine
+  4002L, 110L, 0,   # hops
+  4003L, 100L, 0    # orchard
+) |>
+  left_join(colours, by = "value") |>
+  mutate(colour = if_else(shade > 0, scales::col_darker(colour, shade), colour))
+
+ctm_legend <- ctm_legend |>
+  left_join(ctm_to_dlr |> select(code, dlr_colour = colour), by = "code") |>
+  mutate(colour = coalesce(dlr_colour, colour)) |>
+  select(-dlr_colour)
 
 # fill scale in the legend colours; breaks: codes shown in the legend
 scale_fill_ctm <- function(breaks = waiver()) {
@@ -124,91 +159,95 @@ dimnames(counts) <- list(NULL, NULL, codes)
 farmland <- apply(counts[, , as.character(farmland_codes), drop = FALSE], c(1, 2), sum)
 national_share <- apply(counts, 3, sum) / sum(farmland)
 
-# 2. windows: sums over k x k cells with summed-area tables -------------------
-
-window_sum <- function(m, k) {
-  sat <- matrix(0, nrow(m) + 1, ncol(m) + 1)
-  sat[-1, -1] <- t(apply(apply(m, 2, cumsum), 1, cumsum))
-  rows <- seq_len(nrow(m) - k + 1)
-  cols <- seq_len(ncol(m) - k + 1)
-  sat[rows + k, cols + k] - sat[rows, cols + k] - sat[rows + k, cols] + sat[rows, cols]
-}
+# 2. regions: connected cells where a rare crop dominates ---------------------
 
 pixel_ha <- search_res^2 / 1e4
-
-candidates <- expand_grid(code = candidate_codes, k = window_cells) |>
-  pmap(\(code, k) {
-    crop <- window_sum(counts[, , as.character(code)], k)
-    farm <- window_sum(farmland, k)
-    share <- crop / pmax(farm, 1)
-    lq <- share / national_share[as.character(code)]
-    valid <- farm >= definitions$specialty_min_farmland * (k * cell_px)^2 &
-      crop * pixel_ha >= definitions$specialty_min_crop_ha &
-      share >= definitions$specialty_min_share &
-      lq >= definitions$specialty_min_lq
-    if (!any(valid)) return(NULL)
-    idx <- which(valid, arr.ind = TRUE)
-    tibble(
-      code = code, k = k, row = idx[, 1], col = idx[, 2],
-      share = share[valid], lq = lq[valid], crop_ha = crop[valid] * pixel_ha
-    )
-  }) |>
-  list_rbind() |>
-  mutate(score = share * log(lq))
-
-# window extent (map CRS) of top-left cell row, column and size k
 cell_m <- cell_px * search_res
-window_extent <- function(row, col, k) {
-  e <- ext(ctm_search)
-  ext(
-    xmin(e) + (col - 1) * cell_m, xmin(e) + (col - 1 + k) * cell_m,
-    ymax(e) - (row - 1 + k) * cell_m, ymax(e) - (row - 1) * cell_m
-  )
+e0 <- ext(ctm_search)
+cell_grid <- rast(
+  nrows = n_rows, ncols = n_cols, crs = crs_search,
+  xmin = xmin(e0), xmax = xmin(e0) + n_cols * cell_m,
+  ymin = ymax(e0) - n_rows * cell_m, ymax = ymax(e0)
+)
+# centre coordinates of cell rows and columns
+cell_x <- xmin(e0) + (seq_len(n_cols) - 0.5) * cell_m
+cell_y <- ymax(e0) - (seq_len(n_rows) - 0.5) * cell_m
+
+# per crop: core cells (enough farmland, share and location quotient), joined
+# into regions; gaps of one cell are bridged (patches of the core cells
+# dilated by one cell), the statistics use the core cells only
+find_regions <- function(code) {
+  crop <- counts[, , as.character(code)]
+  share <- crop / pmax(farmland, 1)
+  lq <- share / national_share[as.character(code)]
+  core <- farmland >= definitions$specialty_min_farmland * cell_px^2 &
+    share >= definitions$specialty_cell_share &
+    lq >= definitions$specialty_min_lq
+  if (!any(core)) return(NULL)
+
+  r <- setValues(cell_grid, as.vector(t(ifelse(core, 1, NA))))
+  r <- focal(r, w = 3, fun = "max", na.rm = TRUE)
+  id <- matrix(values(patches(r, directions = 8)), nrow = n_rows, byrow = TRUE)
+  id[!core] <- NA
+
+  idx <- which(!is.na(id), arr.ind = TRUE)
+  tibble(
+    region = id[idx], row = idx[, 1], col = idx[, 2],
+    crop = crop[idx], farm = farmland[idx]
+  ) |>
+    group_by(region) |>
+    summarise(
+      code = code,
+      crop_ha = sum(crop) * pixel_ha,
+      share = sum(crop) / sum(farm),
+      # crop-weighted centre and extent of the region
+      x = weighted.mean(cell_x[col], crop),
+      y = weighted.mean(cell_y[row], crop),
+      size_m = max(diff(range(col)), diff(range(row))) * cell_m + cell_m,
+      .groups = "drop"
+    ) |>
+    mutate(lq = share / national_share[as.character(code)])
 }
+
+regions <- candidate_codes |>
+  map(find_regions) |>
+  list_rbind() |>
+  filter(crop_ha >= definitions$specialty_min_region_ha) |>
+  # large regions dominated by the crop first
+  mutate(score = crop_ha * share)
 
 # 3. greedy selection --------------------------------------------------------
 
-centre <- \(row, col, k) c(col - 1 + k / 2, row - 1 + k / 2) * cell_m
+select_regions <- function(regions) {
+  selected <- regions[0, ]
+  pool <- regions |> arrange(desc(score))
+  min_distance <- definitions$specialty_min_distance_km * 1000
 
-select_windows <- function(candidates) {
-  selected <- list()
-  pool <- candidates |> arrange(desc(score))
-
-  while (length(selected) < definitions$specialty_panels && nrow(pool) > 0) {
-    seed <- pool[1, ]
-    # the largest window of the crop that contains the seed and keeps enough
-    # of its share
-    window <- candidates |>
-      filter(
-        code == seed$code, k >= seed$k,
-        row <= seed$row, row + k >= seed$row + seed$k,
-        col <= seed$col, col + k >= seed$col + seed$k,
-        share >= definitions$specialty_keep_share * seed$share
-      ) |>
-      arrange(desc(k), desc(share)) |>
-      slice(1)
-    selected <- c(selected, list(window))
-
-    # remove candidates near the window and crops with enough windows
-    chosen <- bind_rows(selected)
-    per_crop <- count(chosen, code)
-    c0 <- centre(window$row, window$col, window$k)
-    pool <- pool |>
-      filter(!code %in% per_crop$code[per_crop$n >= definitions$specialty_max_per_crop]) |>
-      mutate(
-        dx = (col - 1 + k / 2) * cell_m - c0[1],
-        dy = (row - 1 + k / 2) * cell_m - c0[2]
-      ) |>
-      filter(sqrt(dx^2 + dy^2) >= definitions$specialty_min_distance_km * 1000) |>
-      select(-dx, -dy)
+  for (i in seq_len(nrow(pool))) {
+    if (nrow(selected) >= definitions$specialty_panels) break
+    candidate <- pool[i, ]
+    too_many <- sum(selected$code == candidate$code) >= definitions$specialty_max_per_crop
+    too_close <- any(sqrt((selected$x - candidate$x)^2 + (selected$y - candidate$y)^2) < min_distance)
+    if (!too_many && !too_close) selected <- bind_rows(selected, candidate)
   }
-  bind_rows(selected)
+  selected
 }
 
-windows <- select_windows(candidates) |>
+# window: the region plus specialty_context of its size on each side, so the
+# region stands out against its surroundings; whole km, within the limits
+windows <- select_regions(regions) |>
   mutate(
     number = row_number(),
-    extent = pmap(list(row, col, k), window_extent)
+    window_km = pmin(
+      pmax(
+        ceiling(size_m * (1 + 2 * definitions$specialty_context) / 1000),
+        definitions$specialty_window_min_km
+      ),
+      definitions$specialty_window_max_km
+    ),
+    extent = pmap(list(x, y, window_km), \(x, y, w) {
+      ext(x - w * 500, x + w * 500, y - w * 500, y + w * 500)
+    })
   ) |>
   left_join(ctm_legend, by = "code")
 
@@ -237,24 +276,26 @@ windows$place <- if_else(
 
 # 4. panels and overview map -------------------------------------------------
 
-ctm_full <- rast(ctm_source)
-max_plot_px <- 800 # larger windows are resampled to this many pixels
+max_plot_px <- 800 # windows are read at most this many pixels wide
 
-# window (extent in the search CRS) at full resolution: cut from the map in
-# its own CRS with a margin, then warped to the search CRS (nearest
-# neighbour) on a grid of at most max_plot_px pixels
+# window (extent in the search CRS) warped from the map with gdalwarp, which
+# reads from the overview that fits the plot resolution, so large windows
+# stay light
 read_window <- function(extent) {
   size <- xmax(extent) - xmin(extent)
   res_out <- max(10, size / max_plot_px)
-  template <- rast(extent, resolution = res_out, crs = crs_search)
-  margin <- st_bbox(st_buffer(st_as_sfc(st_bbox(
-    c(xmin = xmin(extent), ymin = ymin(extent), xmax = xmax(extent), ymax = ymax(extent)),
-    crs = st_crs(crs_search)
-  )), size * 0.1))
-  window_source <- st_bbox(st_transform(st_as_sfc(margin), crs(ctm_full)))
-  r <- crop(ctm_full, ext(window_source[c("xmin", "xmax", "ymin", "ymax")]))
-  r <- project(r, template, method = "near")
-  as.data.frame(r, xy = TRUE, na.rm = TRUE) |>
+  path_window <- tempfile(fileext = ".tif")
+  on.exit(unlink(path_window))
+  sf::gdal_utils(
+    "warp", ctm_source, path_window,
+    options = c(
+      "-t_srs", crs_search,
+      "-te", xmin(extent), ymin(extent), xmax(extent), ymax(extent),
+      "-tr", res_out, res_out, "-r", "near"
+    ),
+    config_options = gdal_config
+  )
+  as.data.frame(rast(path_window), xy = TRUE, na.rm = TRUE) |>
     as_tibble() |>
     set_names(c("x", "y", "code")) |>
     mutate(code = factor(code, levels = ctm_legend$code))
@@ -275,8 +316,7 @@ shown_codes <- windows$cells |>
   unique()
 legend_breaks <- intersect(as.character(ctm_legend$code), shown_codes)
 
-plot_window <- function(number, class, place, k, share, lq, cells, ...) {
-  size_km <- k * definitions$specialty_cell_km
+plot_window <- function(number, class, place, window_km, share, lq, crop_ha, cells, ...) {
   ggplot(cells, aes(x, y, fill = code)) +
     geom_raster() +
     # the legend is drawn once, by the overview map
@@ -286,8 +326,9 @@ plot_window <- function(number, class, place, k, share, lq, cells, ...) {
     labs(
       title = str_c(number, "  ", class),
       subtitle = str_glue(
-        "{place} \u00B7 {size_km} \u00D7 {size_km} km\n",
-        "{scales::label_percent()(share)} of the farmland, ",
+        "{place} \u00B7 {window_km} \u00D7 {window_km} km\n",
+        "Region: {scales::label_comma(accuracy = 100)(crop_ha)} ha, ",
+        "{scales::label_percent()(share)} of the farmland,\n",
         "{scales::label_number(accuracy = 1, big.mark = ',')(lq)}\u00D7 the German share"
       )
     ) +
@@ -317,49 +358,58 @@ overview <- ggplot() +
     shape = 22, size = 0, stroke = 0
   ) +
   scale_fill_ctm(breaks = legend_breaks) +
-  guides(fill = guide_legend(nrow = 2, byrow = TRUE, override.aes = list(size = 5))) +
+  guides(fill = guide_legend(ncol = 2, override.aes = list(size = 5))) +
   geom_sf(data = window_polygons, fill = NA, colour = "grey15", linewidth = 0.5) +
+  # numbers above the frames, with some space
   geom_label(
     aes(x, y, label = number),
-    data = as_tibble(st_coordinates(window_centres)) |>
-      transmute(x = X, y = Y, number = windows$number),
-    size = 3.4,
+    data = tibble(
+      x = map_dbl(windows$extent, \(e) (xmin(e) + xmax(e)) / 2),
+      y = map_dbl(windows$extent, ymax) + 9000,
+      number = windows$number
+    ),
+    vjust = 0,
+    size = 5,
     fontface = "bold",
-    label.padding = unit(0.15, "lines"),
-    nudge_y = 18000
+    label.padding = unit(0.2, "lines"),
+    border.colour = NA,
+    fill = alpha("white", 0.8)
   ) +
   coord_sf(datum = NA) +
   theme_maps() +
   theme(plot.margin = margin(4, 12, 4, 4))
 
-# overview map in the first column over all rows, panels in 3 columns
+# first column: overview map on top, the legend below; panels in 3 columns
 n_panel_cols <- 3
-n_panel_rows <- ceiling(length(panels) / n_panel_cols)
+n_panel_rows <- max(2, ceiling(length(panels) / n_panel_cols))
 # patchwork::area(), terra has an area() too
 design <- c(
-  patchwork::area(1, 1, n_panel_rows, 1),
+  patchwork::area(1, 1, n_panel_rows - 1, 1),
+  patchwork::area(n_panel_rows, 1, n_panel_rows, 1),
   map(seq_along(panels), \(i) {
     patchwork::area((i - 1) %/% n_panel_cols + 1, (i - 1) %% n_panel_cols + 2)
   }) |> do.call(what = c)
 )
 
-plot_specialty <- wrap_plots(c(list(overview), panels), design = design) +
+plot_specialty <- wrap_plots(c(list(overview, guide_area()), panels), design = design) +
   plot_layout(widths = c(1.4, rep(1, n_panel_cols)), guides = "collect") +
   plot_annotation(
     title = "Regions specialised in one crop",
     subtitle = str_wrap(str_glue(
-      "Windows where a crop that is rare in Germany dominates the farmland, ",
-      "found from the crop shares per {definitions$specialty_cell_km} km cell ",
-      "(share \u00D7 log of the location quotient, at most ",
-      "{definitions$specialty_max_per_crop} windows per crop); window sizes ",
-      "differ. Numbers as on the map."
+      "Regions where a crop that is rare in Germany dominates the farmland: ",
+      "neighbouring {definitions$specialty_cell_km} km cells with ",
+      "\u2265 {scales::label_percent()(definitions$specialty_cell_share)} of the ",
+      "farmland and \u2265 {definitions$specialty_min_lq}\u00D7 the German share, ",
+      "the largest per crop (at most {definitions$specialty_max_per_crop}). ",
+      "Windows show the region and its surroundings, sizes differ. Numbers ",
+      "as on the map; colours of the crops as in the DLR crop maps."
     ), 130),
     caption = caption_ctm,
     theme = theme_maps()
   ) &
   theme(
-    legend.position = "bottom",
-    legend.text = element_text(size = rel(0.8))
+    legend.direction = "vertical",
+    legend.text = element_text(size = rel(0.85))
   )
 
 save_plot(
@@ -368,4 +418,4 @@ save_plot(
   width = 16, height = 4.2 * n_panel_rows + 2, dpi = 300, bg = "white"
 )
 
-print(windows |> select(number, class, place, k, share, lq, crop_ha), n = Inf)
+print(windows |> select(number, class, place, window_km, share, lq, crop_ha), n = Inf)
