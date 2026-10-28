@@ -425,8 +425,12 @@ read_fields_window <- function(collection, window) {
 
 # plot_text in definitions.yml: show title, subtitle and caption, and align
 # title and subtitle centre or left. Works on ggplots and on patchworks
-# (whose text is in plot_annotation())
-apply_plot_text <- function(plot) {
+# (whose text is in plot_annotation()). With the plot width (inches), marquee
+# subtitles (element_subtitle()) are wrapped to the width of the plot within
+# its margins, as the whole plot is their cell. Their height is measured
+# before the plot is laid out, so a relative width would wrap them into more
+# lines than measured
+apply_plot_text <- function(plot, width = NULL) {
   settings <- definitions$plot_text %||% list()
   show <- \(x) isTRUE(settings[[x]] %||% TRUE)
   hjust <- if (identical(settings$align, "left")) 0 else 0.5
@@ -434,6 +438,7 @@ apply_plot_text <- function(plot) {
   # set hjust (and halign of markdown elements) of title and subtitle,
   # keeping the class and all other properties of the elements
   align <- function(theme) {
+    marquee <- inherits(theme$plot.subtitle, "element_marquee") && !is.null(width)
     elements <- c("plot.title", "plot.subtitle") |>
       set_names() |>
       map(\(name) {
@@ -443,7 +448,11 @@ apply_plot_text <- function(plot) {
         if (!is.null(element$halign)) element$halign <- hjust
         element
       })
-    position <- if (hjust == 0) "plot" else "panel"
+    if (marquee) {
+      plot_margin <- theme$plot.margin %||% theme_grey()$plot.margin
+      elements$plot.subtitle$width <- unit(width, "in") - plot_margin[2] - plot_margin[4]
+    }
+    position <- if (hjust == 0 || marquee) "plot" else "panel"
     theme + do.call(theme_fn, c(elements, list(plot.title.position = position)))
   }
   theme_fn <- ggplot2::theme
@@ -465,7 +474,33 @@ apply_plot_text <- function(plot) {
   }
 }
 
-# ggsave() with the plot_text settings applied
-save_plot <- function(filename, plot, ...) {
-  ggsave(filename, apply_plot_text(plot), ...)
+# subtitle as marquee markdown (e.g. {#1b7837 **word**} for a coloured word),
+# wrapped to the width of the plot instead of str_wrap(). Aligned as the
+# title (align in plot_text); with justify: true as justified text, the last
+# line aligned as the title. Further arguments (e.g. margin) go to
+# element_marquee(); plot.subtitle overrides must use element_subtitle() too,
+# element_text() turns the subtitle back into plain text
+element_subtitle <- function(margin = ggplot2::margin(t = 6, b = 16), ...) {
+  settings <- definitions$plot_text %||% list()
+  align <- if (identical(settings$align, "left")) "left" else "center"
+  style <- marquee::classic_style(align = align, margin = marquee::trbl(0))
+  # justified only in the paragraphs: textshaping 1.0.5 crashes (at random)
+  # when it justifies an empty string, which marquee passes for the body
+  if (isTRUE(settings$justify)) {
+    style <- marquee::modify_style(style, "p", align = str_c("justified-", align))
+  }
+  marquee::element_marquee(
+    colour = "grey35",
+    lineheight = 1.2,
+    # set to the plot width by save_plot()
+    width = unit(1, "npc"),
+    margin = margin,
+    style = style,
+    ...
+  )
+}
+
+# ggsave() with the plot_text settings applied; width in inches
+save_plot <- function(filename, plot, width, ...) {
+  ggsave(filename, apply_plot_text(plot, width), width = width, ...)
 }

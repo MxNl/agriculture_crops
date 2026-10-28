@@ -2,17 +2,13 @@
 # src/05_field_sizes_stats.R and the DLR crops of src/06_field_crops_dlr.R:
 #
 # - plots/field_size_map.png: median field size per hexagon
-# - plots/field_size_map_corrected.png: the same with the field blocks
-#   converted to field sizes (quantile mapping with the states that publish
-#   fields and field blocks); check in results/field_block_correction_check.csv
-# - plots/field_size_map_land_use.png, ..._corrected.png: arable land and
-#   grassland separately
+# - plots/field_size_map_land_use.png: arable land and grassland separately
 # - plots/field_size_vs_median_map.png: median field size per hexagon in
 #   percent of the median of all polygons, binned diverging scale, beside
 #   ridgelines of the size distribution per state
-# - plots/field_size_area_share.png: share of farmland in fields up to a given
-#   size per state; the size where the curve crosses 50% is the size of the
-#   field the typical hectare lies in
+# - plots/field_size_area_share.png: share of arable land in fields up to a
+#   given size per state; the size where the curve crosses 50% is the size of
+#   the field the typical hectare lies in
 # - plots/field_size_zoom.png: the real field polygons in windows chosen per
 #   unit at percentiles of the median field size, coloured like the map
 # - plots/field_size_by_crop.png: median field size per crop (DLR) and state
@@ -20,12 +16,17 @@
 #   (DLR), all states pooled
 # - plots/field_size_crop_mix.png: crop shares per field size class
 #   (marimekko, column width = area of the class)
-# - plots/field_size_edges_map.png: field edges per ha of farmland per
+# - plots/field_size_edges_map.png: field edges per ha of arable land per
 #   hexagon and state
 # - plots/field_size_crop_diversity_map.png: bivariate map of field size and
 #   crop diversity (needs the 500 m class counts of src/03_crop_change_stats.R)
 # - plots/field_size_time_series.png: field sizes over the yearly editions of
 #   the collections in field_time_series
+#
+# All field size plots show arable land only, as the crop plots of
+# src/02_plot_top_crops.R (no grassland); grassland plots are smaller and
+# would make grassland regions look small-scale. Only the land use map and
+# the time series show arable land and grassland side by side.
 #
 # What one polygon is differs between states (fields, reference parcels or
 # field blocks, see definitions.yml); field blocks hold several fields and are
@@ -80,8 +81,9 @@ read_fields <- function(collections) {
     mutate(unit = factor(unit, levels = units))
 }
 
-fields <- read_fields(collections)
-national_median <- median(fields$area_ha)
+# all land uses for the land use map; arable land for the other plots
+# (after the hexagons are assigned)
+fields_all <- read_fields(collections)
 
 label_ha <- scales::label_number(accuracy = 0.1, suffix = " ha")
 label_ha_short <- \(x) str_c(scales::label_number(drop0trailing = TRUE)(x), " ha")
@@ -94,10 +96,13 @@ hex_d <- sqrt(2 * definitions$field_hex_km2 * 1e6 / sqrt(3))
 hexagons <- st_make_grid(states, cellsize = hex_d, square = FALSE)
 
 # each field to the hexagon with the nearest centre, i.e. the one it lies in
-fields$hex <- st_nearest_feature(
-  st_as_sf(fields, coords = c("x", "y"), crs = definitions$crs_reference),
+fields_all$hex <- st_nearest_feature(
+  st_as_sf(fields_all, coords = c("x", "y"), crs = definitions$crs_reference),
   st_centroid(hexagons)
 )
+
+fields <- fields_all |> filter(land_use == "arable")
+national_median <- median(fields$area_ha)
 
 # median field size per hexagon (and further groups, e.g. land use), for
 # hexagons with at least min_count fields
@@ -235,10 +240,11 @@ plot_hex_map <- function(fill, fill_scale, title, subtitle, data = hex_stats,
     coord_sf(crs = definitions$crs_reference, datum = NA) +
     labs(
       title = title,
-      subtitle = str_wrap(subtitle, 88),
+      subtitle = subtitle,
       caption = str_wrap(caption_maps, 110)
     ) +
     theme_maps() +
+    theme(plot.subtitle = element_subtitle()) +
     theme_legend_bottom()
 }
 
@@ -247,11 +253,11 @@ plot_hex_map <- function(fill, fill_scale, title, subtitle, data = hex_stats,
 plot_size <- plot_hex_map(
   fill = hex_stats$median_ha,
   fill_scale = scale_fill_size(aesthetics = c("fill", "colour")),
-  title = "How large are Germany's agricultural fields?",
+  title = "How large are Germany's arable fields?",
   subtitle = str_glue(
-    "Median size of the fields (\u2265 {min_ha} ha) per hexagon of ",
+    "Median size of the arable fields (\u2265 {min_ha} ha) per hexagon of ",
     "{definitions$field_hex_km2} km\u00B2; hexagons with < {min_count} ",
-    "fields are blank. Where states publish no fields, reference parcels ",
+    "arable fields are blank. Where states publish no fields, reference parcels ",
     "or field blocks are shown; field blocks hold several fields and are ",
     "larger. {not_covered}"
   )
@@ -263,216 +269,47 @@ save_plot(
   width = 9, height = 11.5, dpi = 300, bg = "white"
 )
 
-# 1b. median field size, field blocks corrected ---------------------------
-
-# field blocks hold several fields. Brandenburg and Lower Saxony publish both,
-# so their block and field sizes give a conversion curve (quantile mapping):
-# a block at the p-th percentile of the block sizes gets the size of the
-# field at the p-th percentile of the field sizes. Per land use (arable,
-# grassland; the rest pooled), applied to the block-only states with the
-# reference state in field_block_correction. A corrected size is never
-# larger than the block. Reference parcels (BY, HE) stay as they are, no
-# state publishes both to calibrate them
-correction_probs <- seq(0.01, 0.99, by = 0.01)
-correction_land_use <- \(land_use) if_else(land_use %in% c("arable", "grassland"), land_use, "all")
-
-block_reference <- read_fields(block_collections)
-
-correction_curve <- function(field_ha, block_ha) {
-  tibble(
-    p = correction_probs,
-    block_q = quantile(block_ha, correction_probs, names = FALSE),
-    ratio = pmin(quantile(field_ha, correction_probs, names = FALSE) / block_q, 1)
-  )
-}
-
-# curves per reference state (short) and land use group
-correction_curves <- block_reference |>
-  distinct(short) |>
-  pull(short) |>
-  map(\(ref) {
-    field_ref <- fields |> filter(short == ref, unit == "field")
-    block_ref <- block_reference |> filter(short == ref)
-    c("arable", "grassland", "all") |>
-      map(\(lu) {
-        pick <- \(d) if (lu == "all") d$area_ha else d$area_ha[d$land_use == lu]
-        correction_curve(pick(field_ref), pick(block_ref)) |>
-          mutate(reference = ref, land_use_group = lu)
-      }) |>
-      list_rbind()
-  }) |>
-  list_rbind()
-
-# corrected size of blocks with one curve: their percentile among the
-# reference blocks, then the size ratio at that percentile (constant beyond
-# the 1st and 99th percentile)
-apply_curve <- function(area_ha, curve) {
-  p <- approx(log(curve$block_q), curve$p, log(area_ha), rule = 2, ties = mean)$y
-  area_ha * approx(curve$p, curve$ratio, p, rule = 2)$y
-}
-
-correct_blocks <- function(blocks, reference) {
-  group <- correction_land_use(blocks$land_use)
-  for (g in unique(group)) {
-    curve <- correction_curves |>
-      filter(.data$reference == .env$reference, land_use_group == g)
-    blocks$area_ha[group == g] <- apply_curve(blocks$area_ha[group == g], curve)
-  }
-  blocks
-}
-
-correction <- unlist(definitions$field_block_correction)
-fields_corrected <- fields |>
-  group_split(short) |>
-  map(\(d) {
-    ref <- correction[first(d$short)]
-    if (first(d$unit) == "field block" && !is.na(ref)) correct_blocks(d, ref) else d
-  }) |>
-  list_rbind()
-
-# check: each reference state's blocks corrected with the other reference
-# state's curve, against its real fields
-weighted_median <- function(x, w) {
-  o <- order(x)
-  x[o][which(cumsum(w[o]) >= sum(w) / 2)[1]]
-}
-references <- unique(correction_curves$reference)
-correction_check <- references |>
-  map(\(ref) {
-    other <- setdiff(references, ref)[1]
-    blocks <- block_reference |> filter(short == ref)
-    real <- fields |> filter(short == ref, unit == "field")
-    est <- correct_blocks(blocks, other)
-    tibble(
-      state = ref, curve_from = other,
-      blocks_median = median(blocks$area_ha),
-      corrected_median = median(est$area_ha),
-      fields_median = median(real$area_ha),
-      corrected_typical_ha = weighted_median(est$area_ha, est$area_ha),
-      fields_typical_ha = weighted_median(real$area_ha, real$area_ha)
-    )
-  }) |>
-  list_rbind() |>
-  mutate(error_median = corrected_median / fields_median - 1)
-write_csv(correction_check, "results/field_block_correction_check.csv")
-print(correction_check)
-
-check_text <- correction_check |>
-  transmute(text = str_glue(
-    "{state} blocks with the {curve_from} curve: median ",
-    "{label_ha(corrected_median)} against {label_ha(fields_median)} for the real fields"
-  )) |>
-  pull(text) |>
-  str_flatten("; ")
-
-# titles of the corrected plots: the title of the uncorrected plot with
-# "field blocks corrected" as a superscript (markdown title)
-title_corrected <- function(title) {
-  str_c(
-    title,
-    "<sup><span style='color:#595959; font-size:11pt'> field blocks corrected</span></sup>"
-  )
-}
-theme_title_markdown <- function() {
-  theme(plot.title = ggtext::element_markdown(face = "bold", size = rel(1.4), hjust = 0.5))
-}
-
-hex_stats_corrected <- hex_summary(fields_corrected)
-unit_labels_corrected <- unit_labels
-unit_labels_corrected["field block"] <- "field estimate"
-state_labels_corrected <- make_state_labels(fields_corrected, unit_labels_corrected)
-
-correction_states <- str_flatten_comma(names(correction), " and ")
-corrected_note <- str_glue(
-  "Field blocks of {correction_states} converted to field sizes with the ",
-  "block and field sizes of the states that publish both (quantile mapping ",
-  "by land use; {str_flatten_comma(str_c(names(correction), ': ', correction))}). ",
-  "Check: {check_text}. Reference parcels (BY, HE) are not corrected."
-)
-
-plot_size_corrected <- plot_hex_map(
-  fill = hex_stats_corrected$median_ha,
-  fill_scale = scale_fill_size(aesthetics = c("fill", "colour")),
-  title = title_corrected("How large are Germany's agricultural fields?"),
-  subtitle = str_glue(
-    "Median size of the fields (\u2265 {min_ha} ha) per hexagon of ",
-    "{definitions$field_hex_km2} km\u00B2. {corrected_note} {not_covered}"
-  ),
-  data = hex_stats_corrected,
-  labels = state_labels_corrected
-) +
-  theme_title_markdown()
-
-save_plot(
-  "plots/field_size_map_corrected.png",
-  plot_size_corrected,
-  width = 9, height = 12, dpi = 300, bg = "white"
-)
-
 # 1c. arable land and grassland separately -----------------------------------
 
-# grassland plots are often smaller and lie in other landscapes, so the
-# pooled map partly shows the share of grassland
-plot_land_use_map <- function(fields, labels, title, subtitle) {
-  data <- hex_summary(
-    fields |> filter(land_use %in% c("arable", "grassland")),
-    land_use
-  ) |>
-    mutate(land_use = str_to_sentence(land_use))
-  plot_hex_map(
-    fill = data$median_ha,
-    fill_scale = scale_fill_size(aesthetics = c("fill", "colour")),
-    title = title,
-    subtitle = subtitle,
-    data = data,
-    labels = labels
-  ) +
-    facet_wrap(~land_use) +
-    labs(subtitle = str_wrap(subtitle, 150), caption = str_wrap(caption_maps, 150)) +
-    theme(strip.text = element_text(face = "bold", size = rel(1.1), margin = margin(b = 6)))
-}
+# grassland plots are often smaller and lie in other landscapes, so this map
+# shows both; all other field size plots show arable land only
+hex_land_use <- hex_summary(
+  fields_all |> filter(land_use %in% c("arable", "grassland")),
+  land_use
+) |>
+  mutate(land_use = str_to_sentence(land_use))
 
-land_use_subtitle <- str_glue(
-  "Median size of the arable fields and grassland plots (\u2265 {min_ha} ha) ",
-  "per hexagon of {definitions$field_hex_km2} km\u00B2; hexagons with ",
-  "< {min_count} of them are blank."
-)
+plot_land_use <- plot_hex_map(
+  fill = hex_land_use$median_ha,
+  fill_scale = scale_fill_size(aesthetics = c("fill", "colour")),
+  title = "Field sizes of arable land and grassland",
+  subtitle = str_glue(
+    "Median size of the arable fields and grassland plots (\u2265 {min_ha} ha) ",
+    "per hexagon of {definitions$field_hex_km2} km\u00B2; hexagons with ",
+    "< {min_count} of them are blank. Where states publish no fields, ",
+    "reference parcels or field blocks are shown; field blocks hold several ",
+    "fields and are larger. {not_covered}"
+  ),
+  data = hex_land_use,
+  labels = make_state_labels(fields_all)
+) +
+  facet_wrap(~land_use) +
+  labs(caption = str_wrap(caption_maps, 150)) +
+  theme(strip.text = element_text(face = "bold", size = rel(1.1), margin = margin(b = 6)))
 
 save_plot(
   "plots/field_size_map_land_use.png",
-  plot_land_use_map(
-    fields, state_labels,
-    title = "Field sizes of arable land and grassland",
-    subtitle = str_c(
-      land_use_subtitle, " Where states publish no fields, reference parcels ",
-      "or field blocks are shown; field blocks hold several fields and are ",
-      "larger. ", not_covered
-    )
-  ),
+  plot_land_use,
   width = 16, height = 11.5, dpi = 300, bg = "white"
-)
-
-save_plot(
-  "plots/field_size_map_land_use_corrected.png",
-  plot_land_use_map(
-    fields_corrected, state_labels_corrected,
-    title = title_corrected("Field sizes of arable land and grassland"),
-    subtitle = str_c(land_use_subtitle, " ", corrected_note, " ", not_covered)
-  ) +
-    theme_title_markdown(),
-  width = 16, height = 12, dpi = 300, bg = "white"
 )
 
 # 2. larger or smaller than the median -----------------------------------------
 
-# the words larger and smaller in the end colours of the palette (markdown);
-# wrapped before the colour tags are inserted, so no tag is split
-colour_word <- \(word, colour) {
-  str_c("<span style='color:", colour, "'>**", word, "**</span>")
-}
+# a word in bold and a colour (marquee markdown)
+colour_word <- \(word, colour) str_c("{", colour, " **", word, "**}")
 ratio_subtitle <- str_glue(
   "The colours show where the fields are LARGER or SMALLER than the median ",
-  "of all {scales::label_comma()(nrow(fields))} polygons ",
+  "of all {scales::label_comma()(nrow(fields))} arable polygons ",
   # non-breaking space, so "1.4 ha" stays on one line
   "({str_replace(label_ha(national_median), ' ', '\u00A0')}): on the left ",
   "as median per hexagon, on the right as size distribution per state (line ",
@@ -480,10 +317,8 @@ ratio_subtitle <- str_glue(
   "both a factor of 1.25). Field blocks hold several fields and are larger. ",
   "{not_covered}"
 ) |>
-  str_wrap(150) |>
   str_replace("LARGER", colour_word("larger", ratio_colours[2])) |>
-  str_replace("SMALLER", colour_word("smaller", ratio_colours[1])) |>
-  str_replace_all("\n", "<br>")
+  str_replace("SMALLER", colour_word("smaller", ratio_colours[1]))
 
 map_ratio <- plot_hex_map(
   fill = hex_stats$median_ha / national_median,
@@ -560,12 +395,7 @@ plot_ratio <- wrap_elements(full = map_ratio) + ridges_ratio + plot_spacer() +
     subtitle = ratio_subtitle,
     caption = str_wrap(caption_maps, 150),
     theme = theme_maps() +
-      theme(
-        plot.subtitle = ggtext::element_markdown(
-          colour = "grey35", hjust = 0.5, halign = 0.5, lineheight = 1.2,
-          margin = margin(t = 12, b = 0)
-        )
-      )
+      theme(plot.subtitle = element_subtitle(margin = margin(t = 12, b = 0)))
   ) &
   theme_legend_bottom()
 
@@ -577,7 +407,7 @@ save_plot(
 
 # 3. share of farmland by field size -------------------------------------------
 
-# cumulative share of the agricultural area in polygons up to a size, thinned
+# cumulative share of the arable land in polygons up to a size, thinned
 # to 400 points per collection
 area_share_curve <- function(area_ha) {
   area_ha <- sort(area_ha)
@@ -588,7 +418,10 @@ area_share_curve <- function(area_ha) {
   )
 }
 
-curves <- bind_rows(fields, block_reference) |>
+curves <- bind_rows(
+  fields,
+  read_fields(block_collections) |> filter(land_use == "arable")
+) |>
   group_by(collection, short, unit) |>
   reframe(area_share_curve(area_ha))
 
@@ -627,7 +460,7 @@ plot_curves <- curves |>
   scale_linetype_units +
   labs(
     x = "Field size (log scale)",
-    y = "Share of agricultural area in fields up to this size"
+    y = "Share of arable land in fields up to this size"
   ) +
   theme_charts() +
   theme(
@@ -662,15 +495,15 @@ plot_medians <- area_medians |>
 plot_share <- plot_curves + plot_medians +
   plot_layout(widths = c(1.4, 1)) +
   plot_annotation(
-    title = "Where the farmland lies: in small or in large fields?",
+    title = "Where the arable land lies: in small or in large fields?",
     subtitle = str_c(
-      "Left: share of each state's agricultural area in fields up to a given ",
-      "size. Where a curve crosses 50%, half of the area lies in larger\n",
+      "Left: share of each state's arable land in fields up to a given ",
+      "size. Where a curve crosses 50%, half of the area lies in larger ",
       "fields: the size of the field the typical hectare lies in (right). ",
       "For BB and NI, the field blocks are shown as well (dotted)."
     ),
     caption = caption_fields,
-    theme = theme_charts()
+    theme = theme_charts() + theme(plot.subtitle = element_subtitle())
   )
 
 save_plot(
@@ -718,7 +551,7 @@ plot_zoom_window <- function(collection, state, window) {
   window <- st_sfc(window, crs = definitions$crs_reference)
   bbox <- st_bbox(window)
   in_window <- read_fields_window(collection, window) |>
-    filter(land_use != "other", area_ha >= min_ha)
+    filter(land_use == "arable", area_ha >= min_ha)
   # median of the fields whose centroid lies in the window
   centred <- in_window |>
     filter(lengths(st_within(st_centroid(geometry), window)) > 0)
@@ -788,17 +621,17 @@ plot_zoom <- wrap_plots(
   plot_layout(guides = "collect") +
   plot_annotation(
     title = "What field sizes look like",
-    subtitle = str_wrap(str_glue(
-      "Agricultural polygons in {zoom_km} \u00D7 {zoom_km} km windows, ",
-      "coloured by size as in the map; grey = no agricultural polygon. ",
+    subtitle = str_glue(
+      "Arable polygons in {zoom_km} \u00D7 {zoom_km} km windows, ",
+      "coloured by size as in the map; grey = no arable polygon. ",
       "Windows chosen from the data: per row the hexagons at the ",
       "{str_flatten_comma(scales::label_ordinal()(100 * zoom_percentiles), ' and ')} ",
       "percentile of the median polygon size, among the hexagons with ",
       "\u2265 {scales::label_percent()(definitions$field_zoom_min_farmland)} ",
-      "farmland."
-    ), 110),
+      "arable land."
+    ),
     caption = str_wrap(caption_fields, 140),
-    theme = theme_maps()
+    theme = theme_maps() + theme(plot.subtitle = element_subtitle())
   ) &
   theme_legend_bottom()
 
@@ -820,10 +653,11 @@ crops <- collections$collection |>
   }) |>
   list_rbind()
 
-# polygons dominated by one crop; class 111 (other agricultural use) is no crop
+# polygons dominated by one crop; grassland, fruit trees and other use are no
+# crops (non_crop_values, as in src/02_plot_top_crops.R)
 crop_fields <- fields |>
   inner_join(crops, by = c("collection", "id")) |>
-  filter(dlr_share >= min_share, dlr_class != 111L)
+  filter(dlr_share >= min_share, !dlr_class %in% non_crop_values)
 
 top_classes <- crop_fields |>
   group_by(dlr_class) |>
@@ -879,12 +713,12 @@ plot_crop <- crop_medians |>
   facet_grid(cols = vars(unit), scales = "free_x", space = "free_x") +
   labs(
     title = "Field size by crop",
-    subtitle = str_wrap(str_glue(
-      "Median size of the polygons where one crop of the DLR CropTypes map ",
+    subtitle = str_glue(
+      "Median size of the arable polygons where one crop of the DLR CropTypes map ",
       "{dlr_year} covers \u2265 {scales::label_percent()(min_share)} of the ",
       "area, in ha. Check against the crops the farmers declared (same ",
       "year, single-crop fields): {validation_text} of the area agree."
-    ), 110),
+    ),
     caption = str_c(
       str_wrap(caption_fields, 140), "\n",
       str_remove(caption, " Borders: Natural Earth\\.")
@@ -897,6 +731,7 @@ plot_crop <- crop_medians |>
     panel.grid = element_blank(),
     plot.title.position = "plot",
     plot.caption.position = "plot",
+    plot.subtitle = element_subtitle(),
     axis.text.y.left = ggtext::element_markdown(size = rel(1)),
     axis.text.x.top = element_text(face = "bold"),
     strip.text = element_text(face = "bold", lineheight = 1.1, margin = margin(b = 6)),
@@ -963,14 +798,14 @@ plot_crop_ridges <- crop_ridges |>
   coord_cartesian(xlim = size_limits) +
   labs(
     title = "Field size distribution by crop",
-    subtitle = str_wrap(str_glue(
-      "Size of the polygons where one crop of the DLR CropTypes map ",
+    subtitle = str_glue(
+      "Size of the arable polygons where one crop of the DLR CropTypes map ",
       "{dlr_year} covers \u2265 {scales::label_percent()(min_share)} of the ",
       "area, all states pooled (fields, reference parcels and field blocks); ",
       "line and label: median. Crops grown mainly in the states with field ",
       "blocks (SH, SN, ST, TH) look larger partly because blocks hold ",
       "several fields."
-    ), 112),
+    ),
     caption = str_c(
       str_wrap(caption_fields, 140), "\n",
       str_remove(caption, " Borders: Natural Earth\\.")
@@ -985,7 +820,7 @@ plot_crop_ridges <- crop_ridges |>
     panel.grid.major.y = element_blank(),
     axis.text.y.left = ggtext::element_markdown(size = rel(1), vjust = 0),
     axis.title.x = element_text(margin = margin(t = 12)),
-    plot.subtitle = element_text(margin = margin(t = 12, b = 4))
+    plot.subtitle = element_subtitle(margin = margin(t = 12, b = 4))
   )
 
 save_plot(
@@ -1082,14 +917,14 @@ plot_crop_mix <- crop_mix_rects |>
   ) +
   labs(
     title = "Which crops grow on small and on large fields?",
-    subtitle = str_wrap(str_glue(
+    subtitle = str_glue(
       "Share of each crop in the area of a field size class; column width = ",
-      "share of the class in the total area (below the size). Polygons where ",
+      "share of the class in the total area (below the size). Arable polygons where ",
       "one crop of the DLR CropTypes map {dlr_year} covers ",
       "\u2265 {scales::label_percent()(min_share)} of the area, all states ",
       "pooled; field blocks hold several fields and shift crops to the large ",
       "classes."
-    ), 105),
+    ),
     caption = str_c(
       str_wrap(caption_fields, 140), "\n",
       str_remove(caption, " Borders: Natural Earth\\.")
@@ -1101,7 +936,7 @@ plot_crop_mix <- crop_mix_rects |>
   theme(
     panel.grid = element_blank(),
     axis.text.x = element_blank(),
-    plot.subtitle = element_text(margin = margin(t = 12, b = 12))
+    plot.subtitle = element_subtitle(margin = margin(t = 12, b = 12))
   )
 
 save_plot(
@@ -1122,7 +957,7 @@ scale_fill_edges <- function(aesthetics = "fill", ...) {
     limits = c(100, 1000),
     oob = scales::squish,
     labels = scales::label_number(big.mark = ","),
-    name = "Field edges per ha\nof farmland (m)",
+    name = "Field edges per ha\nof arable land (m)",
     aesthetics = aesthetics,
     ...
   )
@@ -1155,7 +990,7 @@ bars_edges <- edges_states |>
   scale_fill_edges(guide = "none") +
   scale_x_continuous(expand = expansion(mult = c(0, 0.15))) +
   facet_grid(rows = vars(unit), scales = "free_y", space = "free_y", switch = "y") +
-  labs(x = "Field edges per ha of farmland (m)", y = NULL) +
+  labs(x = "Field edges per ha of arable land (m)", y = NULL) +
   theme_charts() +
   theme(
     panel.grid.major.y = element_blank(),
@@ -1168,18 +1003,18 @@ bars_edges <- edges_states |>
 plot_edges <- wrap_elements(full = map_edges) + bars_edges + plot_spacer() +
   plot_layout(design = "AB\nAC", widths = c(1.5, 1), heights = c(1, 0.6)) +
   plot_annotation(
-    title = "Field edges: where farmland is fine-grained",
-    subtitle = str_wrap(str_c(
-      "Length of the field outlines per hectare of farmland, per hexagon ",
+    title = "Field edges: where arable land is fine-grained",
+    subtitle = str_c(
+      "Length of the arable field outlines per hectare of arable land, per hexagon ",
       "(left) and state (right). Small and irregular fields have more edges, ",
       "i.e. more field margins, hedges and ditches. The border between two ",
       "neighbouring fields counts for both. Field blocks lack the borders ",
       "between the fields inside them and underestimate the edges. ",
       not_covered
-    ), 150),
+    ),
     caption = str_wrap(caption_maps, 150),
     theme = theme_maps() +
-      theme(plot.subtitle = element_text(margin = margin(t = 12, b = 0)))
+      theme(plot.subtitle = element_subtitle(margin = margin(t = 12, b = 0)))
   ) &
   theme_legend_bottom()
 
@@ -1271,18 +1106,18 @@ plot_bivariate <- map_bivariate +
   inset_element(legend_bivariate, left = 0, bottom = 0, right = 0.26, top = 0.26) +
   plot_annotation(
     title = "Large fields, few crops?",
-    subtitle = str_wrap(str_glue(
-      "Median field size per hexagon against the crop diversity of the DLR ",
+    subtitle = str_glue(
+      "Median arable field size per hexagon against the crop diversity of the DLR ",
       "CropTypes map {dlr_year}: effective number of crops = exp(Shannon ",
       "index), the number of equally common crops with the same diversity. ",
       "Classes are terciles of the hexagons. Field blocks (SH, SN, ST, TH) ",
       "hold several fields and are larger. {not_covered}"
-    ), 95),
+    ),
     caption = str_c(
       str_wrap(caption_fields, 110), "\n",
       str_wrap(caption, 110)
     ),
-    theme = theme_maps()
+    theme = theme_maps() + theme(plot.subtitle = element_subtitle())
   )
 
 save_plot(
@@ -1307,8 +1142,12 @@ time_series <- definitions$field_time_series |>
   left_join(collections |> select(collection, state, short), by = "collection")
 
 # median field size and the size of the field the typical hectare lies in:
-# the area-weighted median (weighted_median(), section 1b), half of the
-# farmland lies in fields at least this large. Per year and land use
+# the area-weighted median, half of the farmland lies in fields at least this
+# large. Per year and land use
+weighted_median <- function(x, w) {
+  o <- order(x)
+  x[o][which(cumsum(w[o]) >= sum(w) / 2)[1]]
+}
 
 time_stats <- time_series |>
   group_by(short, state, year, land_use) |>
@@ -1395,32 +1234,21 @@ plot_time_ridges <- time_series |>
   )
 
 state_name <- \(short) collections$state[collections$short == short]
-state_word <- \(short) {
-  str_c(
-    "<span style='color:", time_colours[short], "'>**", state_name(short),
-    "**</span>"
-  )
-}
+state_word <- \(short) colour_word(state_name(short), time_colours[short])
 year_range <- \(short) {
   y <- range(time_series$year[time_series$short == short])
   str_c(y[1], "\u2013", y[2])
 }
 
-# wrapped with the plain state names, which are coloured afterwards, so the
-# line lengths are right and no tag is split
 time_subtitle <- str_c(
   "Fields (declared parcels) of all yearly editions published so far: ",
-  state_name("BB"), " ", year_range("BB"), " and ", state_name("NW"), " ",
+  state_word("BB"), " ", year_range("BB"), " and ", state_word("NW"), " ",
   year_range("NW"),
   " (no editions for 2024 and 2025). Left: median field size and the size ",
   "of the field the typical hectare lies in (area-weighted median: half of ",
   "the farmland lies in larger fields). Right: size distribution of the ",
   "arable fields per year, line = median."
-) |>
-  str_wrap(140) |>
-  str_replace(fixed(state_name("BB")), state_word("BB")) |>
-  str_replace(fixed(state_name("NW")), state_word("NW")) |>
-  str_replace_all("\n", "<br>")
+)
 
 plot_time <- plot_time_lines + plot_time_ridges +
   plot_layout(widths = c(1, 1)) +
@@ -1429,12 +1257,7 @@ plot_time <- plot_time_lines + plot_time_ridges +
     subtitle = time_subtitle,
     caption = caption_fields,
     theme = theme_charts() +
-      theme(
-        plot.subtitle = ggtext::element_markdown(
-          colour = "grey35", hjust = 0.5, halign = 0.5, lineheight = 1.2,
-          margin = margin(t = 12, b = 16)
-        )
-      )
+      theme(plot.subtitle = element_subtitle(margin = margin(t = 12, b = 16)))
   )
 
 save_plot(
