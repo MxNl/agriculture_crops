@@ -70,15 +70,6 @@ field_block_collections:
   - {collection: de_bb_block, state: "Brandenburg & Berlin", short: BB, unit: field block}
   - {collection: de_nds_block, state: "Lower Saxony, Bremen & Hamburg", short: NI, unit: field block}
 
-# correction of the field blocks to field sizes: per state with field blocks
-# the state (short) whose fields and field blocks give the conversion curve
-# (quantile mapping of block sizes to field sizes, by land use)
-field_block_correction:
-  SN: BB
-  ST: BB
-  TH: BB
-  SH: NI
-
 # polygons below this size (ha) are dropped: mostly landscape elements and
 # slivers; 0.1 ha is the minimum parcel size for direct payments
 field_min_ha: 0.1
@@ -94,7 +85,7 @@ field_palette_ratio: bam
 # part of the ratio palette used, symmetric around its middle (narrower for
 # cyclic palettes like bamO, whose ends meet in the same colour)
 field_palette_ratio_range: [0, 1]
-# field edges per ha of farmland
+# field edges per ha of arable land
 field_palette_edges: bamako
 
 # crop per polygon from the DLR CropTypes map of the latest year in years: the
@@ -115,7 +106,7 @@ field_time_series:
 
 # zoom windows with the real field polygons: per unit (fields, reference
 # parcels, field blocks) the hexagons at these percentiles of the median field
-# size, among the hexagons whose farmland share is at least
+# size, among the hexagons whose share of arable land is at least
 # field_zoom_min_farmland and whose fields all come from one state; window
 # edge length in km
 field_zoom_km: 4
@@ -160,9 +151,12 @@ specialty_max_per_crop: 2
 specialty_min_distance_km: 60
 
 # text around the plots (field size plots and crop maps): show the title,
-# subtitle and caption, and align title and subtitle "center" or "left"
+# subtitle and caption, and align title and subtitle "center" or "left".
+# justify: subtitles of the field size plots as justified text (block text,
+# last line aligned as the title)
 plot_text:
   title: true
   subtitle: true
   caption: true
   align: center
+  justify: true
