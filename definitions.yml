@@ -113,6 +113,43 @@ field_zoom_km: 4
 field_zoom_percentiles: [0.1, 0.5, 0.9]
 field_zoom_min_farmland: 0.6
 
+# specialty crop regions ------------------------------------------------------
+
+# Thuenen crop type map (CTM, v302, 10 m, CC BY 4.0) and its legend (class
+# code, RGBA, name); the map is read via HTTP (cloud-optimised GeoTIFF)
+thuenen_ctm: https://eodata.thuenen.de/cog/crop_type_map_v302/CTM_GER_2026_rst_v302_2026_09_COG.tif
+thuenen_legend: data/CTM_GER_LegendEN_rst_v302.clr
+thuenen_year: 2026
+
+# classes that never count as farmland or as a specialty crop: small woody
+# features, other areas, small woody features on other land
+specialty_non_farmland: [3001, 3004, 3011]
+# farmland classes that are not candidates (grassland, fallow, other
+# agricultural areas)
+specialty_excluded: [200, 1602, 3002, 3003]
+
+# search: resolution (m) the map is resampled to and cell size (km)
+specialty_search_res_m: 80
+specialty_cell_km: 2
+# core cells of a crop: at least this much farmland, this share of the
+# farmland and this many times the crop's share in Germany (location
+# quotient); neighbouring core cells form a region, which needs this much of
+# the crop (ha)
+specialty_min_farmland: 0.3
+specialty_cell_share: 0.15
+specialty_min_lq: 10
+specialty_min_region_ha: 500
+# window: the region plus this part of its size on each side (contrast with
+# the surroundings), in km between these limits
+specialty_context: 0.15
+specialty_window_min_km: 8
+specialty_window_max_km: 60
+# selection: number of panels, at most this many per crop, minimum distance
+# between window centres (km)
+specialty_panels: 9
+specialty_max_per_crop: 2
+specialty_min_distance_km: 60
+
 # text around the plots (field size plots and crop maps): show the title,
 # subtitle and caption, and align title and subtitle "center" or "left"
 plot_text:
