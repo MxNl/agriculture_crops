@@ -70,6 +70,15 @@ field_block_collections:
   - {collection: de_bb_block, state: "Brandenburg & Berlin", short: BB, unit: field block}
   - {collection: de_nds_block, state: "Lower Saxony, Bremen & Hamburg", short: NI, unit: field block}
 
+# correction of the field blocks to field sizes: per state with field blocks
+# the state (short) whose fields and field blocks give the conversion curve
+# (quantile mapping of block sizes to field sizes, by land use)
+field_block_correction:
+  SN: BB
+  ST: BB
+  TH: BB
+  SH: NI
+
 # polygons below this size (ha) are dropped: mostly landscape elements and
 # slivers; 0.1 ha is the minimum parcel size for direct payments
 field_min_ha: 0.1

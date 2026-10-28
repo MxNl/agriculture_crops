@@ -2,6 +2,11 @@
 # src/05_field_sizes_stats.R and the DLR crops of src/06_field_crops_dlr.R:
 #
 # - plots/field_size_map.png: median field size per hexagon
+# - plots/field_size_map_corrected.png: the same with the field blocks
+#   converted to field sizes (quantile mapping with the states that publish
+#   fields and field blocks); check in results/field_block_correction_check.csv
+# - plots/field_size_map_land_use.png, ..._corrected.png: arable land and
+#   grassland separately
 # - plots/field_size_vs_median_map.png: median field size per hexagon in
 #   percent of the median of all polygons, binned diverging scale, beside
 #   ridgelines of the size distribution per state
@@ -94,29 +99,38 @@ fields$hex <- st_nearest_feature(
   st_centroid(hexagons)
 )
 
-hex_stats <- fields |>
-  group_by(hex) |>
-  summarise(
-    n = n(),
-    median_ha = median(area_ha),
-    # field edges: length of the field outlines per ha of farmland
-    edge_m_ha = sum(perimeter_m) / sum(area_ha),
-    .groups = "drop"
-  ) |>
-  filter(n >= min_count) |>
-  mutate(geometry = hexagons[hex]) |>
-  st_as_sf()
+# median field size per hexagon (and further groups, e.g. land use), for
+# hexagons with at least min_count fields
+hex_summary <- function(fields, ...) {
+  fields |>
+    group_by(..., hex) |>
+    summarise(
+      n = n(),
+      median_ha = median(area_ha),
+      # field edges: length of the field outlines per ha of farmland
+      edge_m_ha = sum(perimeter_m) / sum(area_ha),
+      .groups = "drop"
+    ) |>
+    filter(n >= min_count) |>
+    mutate(geometry = hexagons[hex]) |>
+    st_as_sf()
+}
+
+hex_stats <- hex_summary(fields)
 
 # state labels at the median field position, with the unit below
-state_labels <- fields |>
-  group_by(short, unit) |>
-  summarise(x = median(x), y = median(y), .groups = "drop") |>
-  mutate(label = str_c(short, "\n", unit_labels[as.character(unit)]))
+make_state_labels <- function(fields, unit_text = unit_labels) {
+  fields |>
+    group_by(short, unit) |>
+    summarise(x = median(x), y = median(y), .groups = "drop") |>
+    mutate(label = str_c(short, "\n", unit_text[as.character(unit)]))
+}
+state_labels <- make_state_labels(fields)
 
-geom_state_labels <- function() {
+geom_state_labels <- function(labels = state_labels) {
   geom_label(
     aes(x, y, label = label),
-    data = state_labels,
+    data = labels,
     inherit.aes = FALSE,
     size = 2.6,
     lineheight = 0.9,
@@ -207,8 +221,9 @@ not_covered <- str_c(
   "and Mecklenburg-Western Pomerania."
 )
 
-plot_hex_map <- function(fill, fill_scale, title, subtitle) {
-  hex_stats |>
+plot_hex_map <- function(fill, fill_scale, title, subtitle, data = hex_stats,
+                         labels = state_labels) {
+  data |>
     mutate(fill = fill) |>
     ggplot() +
     # outline in the fill colour, without it thin white seams show between
@@ -216,7 +231,7 @@ plot_hex_map <- function(fill, fill_scale, title, subtitle) {
     geom_sf(aes(fill = fill, colour = fill), linewidth = 0.1) +
     fill_scale +
     geom_borders() +
-    geom_state_labels() +
+    geom_state_labels(labels) +
     coord_sf(crs = definitions$crs_reference, datum = NA) +
     labs(
       title = title,
@@ -246,6 +261,206 @@ save_plot(
   "plots/field_size_map.png",
   plot_size,
   width = 9, height = 11.5, dpi = 300, bg = "white"
+)
+
+# 1b. median field size, field blocks corrected ---------------------------
+
+# field blocks hold several fields. Brandenburg and Lower Saxony publish both,
+# so their block and field sizes give a conversion curve (quantile mapping):
+# a block at the p-th percentile of the block sizes gets the size of the
+# field at the p-th percentile of the field sizes. Per land use (arable,
+# grassland; the rest pooled), applied to the block-only states with the
+# reference state in field_block_correction. A corrected size is never
+# larger than the block. Reference parcels (BY, HE) stay as they are, no
+# state publishes both to calibrate them
+correction_probs <- seq(0.01, 0.99, by = 0.01)
+correction_land_use <- \(land_use) if_else(land_use %in% c("arable", "grassland"), land_use, "all")
+
+block_reference <- read_fields(block_collections)
+
+correction_curve <- function(field_ha, block_ha) {
+  tibble(
+    p = correction_probs,
+    block_q = quantile(block_ha, correction_probs, names = FALSE),
+    ratio = pmin(quantile(field_ha, correction_probs, names = FALSE) / block_q, 1)
+  )
+}
+
+# curves per reference state (short) and land use group
+correction_curves <- block_reference |>
+  distinct(short) |>
+  pull(short) |>
+  map(\(ref) {
+    field_ref <- fields |> filter(short == ref, unit == "field")
+    block_ref <- block_reference |> filter(short == ref)
+    c("arable", "grassland", "all") |>
+      map(\(lu) {
+        pick <- \(d) if (lu == "all") d$area_ha else d$area_ha[d$land_use == lu]
+        correction_curve(pick(field_ref), pick(block_ref)) |>
+          mutate(reference = ref, land_use_group = lu)
+      }) |>
+      list_rbind()
+  }) |>
+  list_rbind()
+
+# corrected size of blocks with one curve: their percentile among the
+# reference blocks, then the size ratio at that percentile (constant beyond
+# the 1st and 99th percentile)
+apply_curve <- function(area_ha, curve) {
+  p <- approx(log(curve$block_q), curve$p, log(area_ha), rule = 2, ties = mean)$y
+  area_ha * approx(curve$p, curve$ratio, p, rule = 2)$y
+}
+
+correct_blocks <- function(blocks, reference) {
+  group <- correction_land_use(blocks$land_use)
+  for (g in unique(group)) {
+    curve <- correction_curves |>
+      filter(.data$reference == .env$reference, land_use_group == g)
+    blocks$area_ha[group == g] <- apply_curve(blocks$area_ha[group == g], curve)
+  }
+  blocks
+}
+
+correction <- unlist(definitions$field_block_correction)
+fields_corrected <- fields |>
+  group_split(short) |>
+  map(\(d) {
+    ref <- correction[first(d$short)]
+    if (first(d$unit) == "field block" && !is.na(ref)) correct_blocks(d, ref) else d
+  }) |>
+  list_rbind()
+
+# check: each reference state's blocks corrected with the other reference
+# state's curve, against its real fields
+weighted_median <- function(x, w) {
+  o <- order(x)
+  x[o][which(cumsum(w[o]) >= sum(w) / 2)[1]]
+}
+references <- unique(correction_curves$reference)
+correction_check <- references |>
+  map(\(ref) {
+    other <- setdiff(references, ref)[1]
+    blocks <- block_reference |> filter(short == ref)
+    real <- fields |> filter(short == ref, unit == "field")
+    est <- correct_blocks(blocks, other)
+    tibble(
+      state = ref, curve_from = other,
+      blocks_median = median(blocks$area_ha),
+      corrected_median = median(est$area_ha),
+      fields_median = median(real$area_ha),
+      corrected_typical_ha = weighted_median(est$area_ha, est$area_ha),
+      fields_typical_ha = weighted_median(real$area_ha, real$area_ha)
+    )
+  }) |>
+  list_rbind() |>
+  mutate(error_median = corrected_median / fields_median - 1)
+write_csv(correction_check, "results/field_block_correction_check.csv")
+print(correction_check)
+
+check_text <- correction_check |>
+  transmute(text = str_glue(
+    "{state} blocks with the {curve_from} curve: median ",
+    "{label_ha(corrected_median)} against {label_ha(fields_median)} for the real fields"
+  )) |>
+  pull(text) |>
+  str_flatten("; ")
+
+# titles of the corrected plots: the title of the uncorrected plot with
+# "field blocks corrected" as a superscript (markdown title)
+title_corrected <- function(title) {
+  str_c(
+    title,
+    "<sup><span style='color:#595959; font-size:11pt'> field blocks corrected</span></sup>"
+  )
+}
+theme_title_markdown <- function() {
+  theme(plot.title = ggtext::element_markdown(face = "bold", size = rel(1.4), hjust = 0.5))
+}
+
+hex_stats_corrected <- hex_summary(fields_corrected)
+unit_labels_corrected <- unit_labels
+unit_labels_corrected["field block"] <- "field estimate"
+state_labels_corrected <- make_state_labels(fields_corrected, unit_labels_corrected)
+
+correction_states <- str_flatten_comma(names(correction), " and ")
+corrected_note <- str_glue(
+  "Field blocks of {correction_states} converted to field sizes with the ",
+  "block and field sizes of the states that publish both (quantile mapping ",
+  "by land use; {str_flatten_comma(str_c(names(correction), ': ', correction))}). ",
+  "Check: {check_text}. Reference parcels (BY, HE) are not corrected."
+)
+
+plot_size_corrected <- plot_hex_map(
+  fill = hex_stats_corrected$median_ha,
+  fill_scale = scale_fill_size(aesthetics = c("fill", "colour")),
+  title = title_corrected("How large are Germany's agricultural fields?"),
+  subtitle = str_glue(
+    "Median size of the fields (\u2265 {min_ha} ha) per hexagon of ",
+    "{definitions$field_hex_km2} km\u00B2. {corrected_note} {not_covered}"
+  ),
+  data = hex_stats_corrected,
+  labels = state_labels_corrected
+) +
+  theme_title_markdown()
+
+save_plot(
+  "plots/field_size_map_corrected.png",
+  plot_size_corrected,
+  width = 9, height = 12, dpi = 300, bg = "white"
+)
+
+# 1c. arable land and grassland separately -----------------------------------
+
+# grassland plots are often smaller and lie in other landscapes, so the
+# pooled map partly shows the share of grassland
+plot_land_use_map <- function(fields, labels, title, subtitle) {
+  data <- hex_summary(
+    fields |> filter(land_use %in% c("arable", "grassland")),
+    land_use
+  ) |>
+    mutate(land_use = str_to_sentence(land_use))
+  plot_hex_map(
+    fill = data$median_ha,
+    fill_scale = scale_fill_size(aesthetics = c("fill", "colour")),
+    title = title,
+    subtitle = subtitle,
+    data = data,
+    labels = labels
+  ) +
+    facet_wrap(~land_use) +
+    labs(subtitle = str_wrap(subtitle, 150), caption = str_wrap(caption_maps, 150)) +
+    theme(strip.text = element_text(face = "bold", size = rel(1.1), margin = margin(b = 6)))
+}
+
+land_use_subtitle <- str_glue(
+  "Median size of the arable fields and grassland plots (\u2265 {min_ha} ha) ",
+  "per hexagon of {definitions$field_hex_km2} km\u00B2; hexagons with ",
+  "< {min_count} of them are blank."
+)
+
+save_plot(
+  "plots/field_size_map_land_use.png",
+  plot_land_use_map(
+    fields, state_labels,
+    title = "Field sizes of arable land and grassland",
+    subtitle = str_c(
+      land_use_subtitle, " Where states publish no fields, reference parcels ",
+      "or field blocks are shown; field blocks hold several fields and are ",
+      "larger. ", not_covered
+    )
+  ),
+  width = 16, height = 11.5, dpi = 300, bg = "white"
+)
+
+save_plot(
+  "plots/field_size_map_land_use_corrected.png",
+  plot_land_use_map(
+    fields_corrected, state_labels_corrected,
+    title = title_corrected("Field sizes of arable land and grassland"),
+    subtitle = str_c(land_use_subtitle, " ", corrected_note, " ", not_covered)
+  ) +
+    theme_title_markdown(),
+  width = 16, height = 12, dpi = 300, bg = "white"
 )
 
 # 2. larger or smaller than the median -----------------------------------------
@@ -373,7 +588,7 @@ area_share_curve <- function(area_ha) {
   )
 }
 
-curves <- bind_rows(fields, read_fields(block_collections)) |>
+curves <- bind_rows(fields, block_reference) |>
   group_by(collection, short, unit) |>
   reframe(area_share_curve(area_ha))
 
@@ -1092,12 +1307,8 @@ time_series <- definitions$field_time_series |>
   left_join(collections |> select(collection, state, short), by = "collection")
 
 # median field size and the size of the field the typical hectare lies in:
-# the area-weighted median, half of the farmland lies in fields at least this
-# large. Per year and land use
-weighted_median <- function(x, w) {
-  o <- order(x)
-  x[o][which(cumsum(w[o]) >= sum(w) / 2)[1]]
-}
+# the area-weighted median (weighted_median(), section 1b), half of the
+# farmland lies in fields at least this large. Per year and land use
 
 time_stats <- time_series |>
   group_by(short, state, year, land_use) |>
