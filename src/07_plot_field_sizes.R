@@ -24,6 +24,9 @@
 #   hexagon and state
 # - plots/field_size_crop_diversity_map.png: bivariate map of field size and
 #   crop diversity (needs the 500 m class counts of src/03_crop_change_stats.R)
+# - the comparison with the median, the share of farmland, the crop charts
+#   and the crop diversity map also as ..._corrected.png, with the field
+#   blocks converted to field sizes as in field_size_map_corrected.png
 # - plots/field_size_time_series.png: field sizes over the yearly editions of
 #   the collections in field_time_series
 #
@@ -47,11 +50,13 @@ zoom_km <- definitions$field_zoom_km
 min_share <- definitions$field_crop_min_share
 dlr_year <- max(years)
 
-units <- c("field", "reference parcel", "field block")
+# field estimate: field block converted to a field size (section 1b)
+units <- c("field", "reference parcel", "field block", "field estimate")
 unit_labels <- c(
   "field" = "fields",
   "reference parcel" = "reference parcels",
-  "field block" = "field blocks"
+  "field block" = "field blocks",
+  "field estimate" = "field estimates"
 )
 
 caption_fields <- str_c(
@@ -326,7 +331,12 @@ fields_corrected <- fields |>
   group_split(short) |>
   map(\(d) {
     ref <- correction[first(d$short)]
-    if (first(d$unit) == "field block" && !is.na(ref)) correct_blocks(d, ref) else d
+    if (first(d$unit) == "field block" && !is.na(ref)) {
+      correct_blocks(d, ref) |>
+        mutate(unit = factor("field estimate", levels = units))
+    } else {
+      d
+    }
   }) |>
   list_rbind()
 
@@ -377,10 +387,13 @@ theme_title_markdown <- function() {
   theme(plot.title = ggtext::element_markdown(face = "bold", size = rel(1.4), hjust = 0.5))
 }
 
+# title, title theme and file of a plot drawn uncorrected and corrected
+plot_title <- \(title, corrected) if (corrected) title_corrected(title) else title
+title_theme <- \(corrected) if (corrected) theme_title_markdown()
+plot_file <- \(name, corrected) str_c("plots/", name, if (corrected) "_corrected", ".png")
+
 hex_stats_corrected <- hex_summary(fields_corrected)
-unit_labels_corrected <- unit_labels
-unit_labels_corrected["field block"] <- "field estimate"
-state_labels_corrected <- make_state_labels(fields_corrected, unit_labels_corrected)
+state_labels_corrected <- make_state_labels(fields_corrected)
 
 correction_states <- str_flatten_comma(names(correction), " and ")
 corrected_note <- str_glue(
@@ -470,109 +483,125 @@ save_plot(
 colour_word <- \(word, colour) {
   str_c("<span style='color:", colour, "'>**", word, "**</span>")
 }
-ratio_subtitle <- str_glue(
-  "The colours show where the fields are LARGER or SMALLER than the median ",
-  "of all {scales::label_comma()(nrow(fields))} polygons ",
-  # non-breaking space, so "1.4 ha" stays on one line
-  "({str_replace(label_ha(national_median), ' ', '\u00A0')}): on the left ",
-  "as median per hexagon, on the right as size distribution per state (line ",
-  "= median of the state). The bins are symmetric in ratios (80% and 125% are ",
-  "both a factor of 1.25). Field blocks hold several fields and are larger. ",
-  "{not_covered}"
-) |>
-  str_wrap(150) |>
-  str_replace("LARGER", colour_word("larger", ratio_colours[2])) |>
-  str_replace("SMALLER", colour_word("smaller", ratio_colours[1])) |>
-  str_replace_all("\n", "<br>")
 
-map_ratio <- plot_hex_map(
-  fill = hex_stats$median_ha / national_median,
-  fill_scale = scale_fill_ratio(aesthetics = c("fill", "colour")),
-  title = NULL,
-  subtitle = NULL
-) +
-  labs(caption = NULL)
-
-# size distribution per state, grouped by what one polygon is. Densities on
-# the log scale; the fill follows the ratio to the median like the map
-ridges_ratio <- fields |>
-  mutate(
-    ratio = area_ha / national_median,
-    state = fct_reorder(str_c(state, " (", short, ")"), area_ha, .fun = median),
-    # two lines, the strip of the reference parcels is short
-    unit = fct_relabel(unit, \(u) str_replace(unit_labels[u], " ", "\n"))
+# drawn for the fields as published and with the field blocks corrected; the
+# median of all polygons is that of the fields given
+plot_vs_median <- function(fields, hex_stats, labels, corrected = FALSE) {
+  national_median <- median(fields$area_ha)
+  blocks_note <- if (corrected) corrected_note else "Field blocks hold several fields and are larger."
+  ratio_subtitle <- str_glue(
+    "The colours show where the fields are LARGER or SMALLER than the median ",
+    "of all {scales::label_comma()(nrow(fields))} polygons ",
+    # non-breaking space, so "1.4 ha" stays on one line
+    "({str_replace(label_ha(national_median), ' ', '\u00A0')}): on the left ",
+    "as median per hexagon, on the right as size distribution per state (line ",
+    "= median of the state). The bins are symmetric in ratios (80% and 125% are ",
+    "both a factor of 1.25). {blocks_note} ",
+    "{not_covered}"
   ) |>
-  ggplot(aes(ratio, state)) +
-  geom_vline(xintercept = 1, colour = "grey60", linewidth = 0.3) +
-  ggridges::geom_density_ridges_gradient(
-    # ggridges returns x back-transformed, i.e. as ratio
-    aes(fill = after_stat(x)),
-    bandwidth = 0.25,
-    scale = 1.15,
-    rel_min_height = 0.005,
-    colour = "white",
-    linewidth = 0.5,
-    quantile_lines = TRUE,
-    quantiles = 2
-  ) +
-  # slightly transparent (geom_density_ridges_gradient has no alpha); the map
-  # shows the legend
-  scale_fill_ratio(alpha = 0.8, guide = "none") +
-  scale_x_continuous(
-    transform = "log2",
-    breaks = 2^seq(-3, 3),
-    labels = scales::label_percent(big.mark = ","),
-    limits = c(1 / 16, 64),
-    expand = expansion(0),
-    sec.axis = sec_axis(
-      \(x) x * national_median,
-      breaks = c(0.1, 0.5, 1, 2, 5, 10, 20, 50),
-      labels = label_ha_short
-    )
-  ) +
-  scale_y_discrete(expand = expansion(add = c(0.2, 1))) +
-  facet_grid(rows = vars(unit), scales = "free_y", space = "free_y", switch = "y") +
-  labs(x = "Polygon size in percent of the median of all polygons", y = NULL) +
-  theme_charts() +
-  theme(
-    panel.grid.major.y = element_blank(),
-    strip.placement = "outside",
-    strip.text.y.left = element_text(face = "bold", angle = 90, lineheight = 1.1),
-    axis.text.y = element_text(vjust = 0),
-    axis.title.x.bottom = element_text(margin = margin(t = 12)),
-    # space below the subtitle; the map is free and not moved by it
-    plot.margin = margin(60, 0, 0, 20)
-  )
+    str_wrap(150) |>
+    str_replace("LARGER", colour_word("larger", ratio_colours[2])) |>
+    str_replace("SMALLER", colour_word("smaller", ratio_colours[1])) |>
+    str_replace_all("\n", "<br>")
 
-# legend below the map only. The map is limited by its height (fixed
-# aspect), so it spans the ridges and a spacer below them: the map gets
-# larger, the ridges keep their size. wrap_elements(): the map is not aligned
-# with the ridges (their axis and top margin), so it starts right below the
-# subtitle
-plot_ratio <- wrap_elements(full = map_ratio) + ridges_ratio + plot_spacer() +
-  plot_layout(
-    design = "AB\nAC",
-    widths = c(1.5, 1),
-    heights = c(1, 0.18)
+  map_ratio <- plot_hex_map(
+    fill = hex_stats$median_ha / national_median,
+    fill_scale = scale_fill_ratio(aesthetics = c("fill", "colour")),
+    title = NULL,
+    subtitle = NULL,
+    data = hex_stats,
+    labels = labels
   ) +
-  plot_annotation(
-    title = "Larger or smaller than the typical field?",
-    subtitle = ratio_subtitle,
-    caption = str_wrap(caption_maps, 150),
-    theme = theme_maps() +
-      theme(
-        plot.subtitle = ggtext::element_markdown(
-          colour = "grey35", hjust = 0.5, halign = 0.5, lineheight = 1.2,
-          margin = margin(t = 12, b = 0)
-        )
+    labs(caption = NULL)
+
+  # size distribution per state, grouped by what one polygon is. Densities on
+  # the log scale; the fill follows the ratio to the median like the map
+  ridges_ratio <- fields |>
+    mutate(
+      ratio = area_ha / national_median,
+      state = fct_reorder(str_c(state, " (", short, ")"), area_ha, .fun = median),
+      # two lines, the strip of the reference parcels is short
+      unit = fct_relabel(unit, \(u) str_replace(unit_labels[u], " ", "\n"))
+    ) |>
+    ggplot(aes(ratio, state)) +
+    geom_vline(xintercept = 1, colour = "grey60", linewidth = 0.3) +
+    ggridges::geom_density_ridges_gradient(
+      # ggridges returns x back-transformed, i.e. as ratio
+      aes(fill = after_stat(x)),
+      bandwidth = 0.25,
+      scale = 1.15,
+      rel_min_height = 0.005,
+      colour = "white",
+      linewidth = 0.5,
+      quantile_lines = TRUE,
+      quantiles = 2
+    ) +
+    # slightly transparent (geom_density_ridges_gradient has no alpha); the map
+    # shows the legend
+    scale_fill_ratio(alpha = 0.8, guide = "none") +
+    scale_x_continuous(
+      transform = "log2",
+      breaks = 2^seq(-3, 3),
+      labels = scales::label_percent(big.mark = ","),
+      limits = c(1 / 16, 64),
+      expand = expansion(0),
+      sec.axis = sec_axis(
+        \(x) x * national_median,
+        breaks = c(0.1, 0.5, 1, 2, 5, 10, 20, 50),
+        labels = label_ha_short
       )
-  ) &
-  theme_legend_bottom()
+    ) +
+    scale_y_discrete(expand = expansion(add = c(0.2, 1))) +
+    facet_grid(rows = vars(unit), scales = "free_y", space = "free_y", switch = "y") +
+    labs(x = "Polygon size in percent of the median of all polygons", y = NULL) +
+    theme_charts() +
+    theme(
+      panel.grid.major.y = element_blank(),
+      strip.placement = "outside",
+      strip.text.y.left = element_text(face = "bold", angle = 90, lineheight = 1.1),
+      axis.text.y = element_text(vjust = 0),
+      axis.title.x.bottom = element_text(margin = margin(t = 12)),
+      # space below the subtitle; the map is free and not moved by it
+      plot.margin = margin(60, 0, 0, 20)
+    )
+
+  # legend below the map only. The map is limited by its height (fixed
+  # aspect), so it spans the ridges and a spacer below them: the map gets
+  # larger, the ridges keep their size. wrap_elements(): the map is not aligned
+  # with the ridges (their axis and top margin), so it starts right below the
+  # subtitle
+  wrap_elements(full = map_ratio) + ridges_ratio + plot_spacer() +
+    plot_layout(
+      design = "AB\nAC",
+      widths = c(1.5, 1),
+      heights = c(1, 0.18)
+    ) +
+    plot_annotation(
+      title = plot_title("Larger or smaller than the typical field?", corrected),
+      subtitle = ratio_subtitle,
+      caption = str_wrap(caption_maps, 150),
+      theme = theme_maps() +
+        theme(
+          plot.subtitle = ggtext::element_markdown(
+            colour = "grey35", hjust = 0.5, halign = 0.5, lineheight = 1.2,
+            margin = margin(t = 12, b = 0)
+          )
+        ) +
+        title_theme(corrected)
+    ) &
+    theme_legend_bottom()
+}
 
 save_plot(
-  "plots/field_size_vs_median_map.png",
-  plot_ratio,
+  plot_file("field_size_vs_median_map", FALSE),
+  plot_vs_median(fields, hex_stats, state_labels),
   width = 17, height = 12.3, dpi = 300, bg = "white"
+)
+
+save_plot(
+  plot_file("field_size_vs_median_map", TRUE),
+  plot_vs_median(fields_corrected, hex_stats_corrected, state_labels_corrected, corrected = TRUE),
+  width = 17, height = 12.6, dpi = 300, bg = "white"
 )
 
 # 3. share of farmland by field size -------------------------------------------
@@ -588,95 +617,116 @@ area_share_curve <- function(area_ha) {
   )
 }
 
-curves <- bind_rows(fields, block_reference) |>
-  group_by(collection, short, unit) |>
-  reframe(area_share_curve(area_ha))
-
-# size where half of the farmland lies in smaller and half in larger polygons
-area_medians <- curves |>
-  group_by(collection, short, unit) |>
-  summarise(size_ha = approx(share, size_ha, 0.5, ties = "ordered")$y, .groups = "drop") |>
-  left_join(
-    bind_rows(collections, block_collections) |> select(collection, state),
-    by = "collection"
-  ) |>
-  mutate(
-    share = 0.5,
-    label = str_c(state, " (", unit_labels[as.character(unit)], ")"),
-    label = fct_reorder(label, size_ha)
-  )
-
 scale_colour_states <- scale_colour_manual(values = state_colours, guide = "none")
 scale_linetype_units <- scale_linetype_manual(
-  values = c("field" = "solid", "reference parcel" = "longdash", "field block" = "dotted"),
+  values = c(
+    "field" = "solid", "reference parcel" = "longdash",
+    "field block" = "dotted", "field estimate" = "dotdash"
+  ),
   labels = unit_labels,
   name = NULL
 )
 
-plot_curves <- curves |>
-  ggplot(aes(size_ha, share, colour = short, linetype = unit)) +
-  geom_hline(yintercept = 0.5, colour = "grey60", linewidth = 0.3) +
-  geom_line(linewidth = 0.7) +
-  geom_point(data = area_medians, size = 2.2, show.legend = FALSE) +
-  scale_x_log10(
-    breaks = c(0.1, 0.3, 1, 3, 10, 30, 100, 300),
-    labels = label_ha_short
-  ) +
-  scale_y_continuous(labels = scales::label_percent(), expand = expansion(0.01)) +
-  scale_colour_states +
-  scale_linetype_units +
-  labs(
-    x = "Field size (log scale)",
-    y = "Share of agricultural area in fields up to this size"
-  ) +
-  theme_charts() +
-  theme(
-    legend.position = "inside",
-    legend.position.inside = c(0.02, 0.98),
-    legend.justification = c(0, 1),
-    legend.key.width = unit(1.4, "cm"),
-    legend.background = element_rect(fill = "white", colour = NA),
-    plot.margin = margin(0, 10, 0, 0)
-  )
+# drawn for the fields as published and with the field blocks corrected; the
+# field blocks of BB and NI are shown in both
+plot_area_share <- function(fields, corrected = FALSE) {
+  curves <- bind_rows(fields, block_reference) |>
+    group_by(collection, short, unit) |>
+    reframe(area_share_curve(area_ha))
 
-# the 50% crossings of the curves, sorted
-plot_medians <- area_medians |>
-  ggplot(aes(size_ha, label, colour = short)) +
-  geom_segment(aes(x = 0, xend = size_ha, linetype = unit), linewidth = 0.7) +
-  geom_point(size = 2.6) +
-  geom_text(
-    aes(label = label_ha_short(signif(size_ha, 2))),
-    hjust = 0, nudge_x = 1.5, size = 3.6, show.legend = FALSE
-  ) +
-  scale_x_continuous(expand = expansion(mult = c(0, 0.2))) +
-  scale_colour_states +
-  scale_linetype_units +
-  guides(linetype = "none") +
-  labs(x = "Size of the field the typical hectare lies in", y = NULL) +
-  theme_charts() +
-  theme(
-    panel.grid.major.y = element_blank(),
-    plot.margin = margin(0, 0, 0, 10)
-  )
+  # size where half of the farmland lies in smaller and half in larger polygons
+  area_medians <- curves |>
+    group_by(collection, short, unit) |>
+    summarise(size_ha = approx(share, size_ha, 0.5, ties = "ordered")$y, .groups = "drop") |>
+    left_join(
+      bind_rows(collections, block_collections) |> select(collection, state),
+      by = "collection"
+    ) |>
+    mutate(
+      share = 0.5,
+      label = str_c(state, " (", unit_labels[as.character(unit)], ")"),
+      label = fct_reorder(label, size_ha)
+    )
 
-plot_share <- plot_curves + plot_medians +
+  plot_curves <- curves |>
+    ggplot(aes(size_ha, share, colour = short, linetype = unit)) +
+    geom_hline(yintercept = 0.5, colour = "grey60", linewidth = 0.3) +
+    geom_line(linewidth = 0.7) +
+    geom_point(data = area_medians, size = 2.2, show.legend = FALSE) +
+    scale_x_log10(
+      breaks = c(0.1, 0.3, 1, 3, 10, 30, 100, 300),
+      labels = label_ha_short
+    ) +
+    scale_y_continuous(labels = scales::label_percent(), expand = expansion(0.01)) +
+    scale_colour_states +
+    scale_linetype_units +
+    labs(
+      x = "Field size (log scale)",
+      y = "Share of agricultural area in fields up to this size"
+    ) +
+    theme_charts() +
+    theme(
+      legend.position = "inside",
+      legend.position.inside = c(0.02, 0.98),
+      legend.justification = c(0, 1),
+      legend.key.width = unit(1.4, "cm"),
+      legend.background = element_rect(fill = "white", colour = NA),
+      plot.margin = margin(0, 10, 0, 0)
+    )
+
+  # the 50% crossings of the curves, sorted
+  plot_medians <- area_medians |>
+    ggplot(aes(size_ha, label, colour = short)) +
+    geom_segment(aes(x = 0, xend = size_ha, linetype = unit), linewidth = 0.7) +
+    geom_point(size = 2.6) +
+    geom_text(
+      aes(label = label_ha_short(signif(size_ha, 2))),
+      hjust = 0, nudge_x = 1.5, size = 3.6, show.legend = FALSE
+    ) +
+    scale_x_continuous(expand = expansion(mult = c(0, 0.2))) +
+    scale_colour_states +
+    scale_linetype_units +
+    guides(linetype = "none") +
+    labs(x = "Size of the field the typical hectare lies in", y = NULL) +
+    theme_charts() +
+    theme(
+      panel.grid.major.y = element_blank(),
+      plot.margin = margin(0, 0, 0, 10)
+    )
+
+  share_subtitle <- str_c(
+    "Left: share of each state's agricultural area in fields up to a given ",
+    "size. Where a curve crosses 50%, half of the area lies in larger\n",
+    "fields: the size of the field the typical hectare lies in (right). ",
+    "For BB and NI, the field blocks are shown as well (dotted)."
+  )
+  if (corrected) {
+    share_subtitle <- str_wrap(
+      str_c(str_replace_all(share_subtitle, "\n", " "), " ", corrected_note),
+      140
+    )
+}
+
+plot_curves + plot_medians +
   plot_layout(widths = c(1.4, 1)) +
   plot_annotation(
-    title = "Where the farmland lies: in small or in large fields?",
-    subtitle = str_c(
-      "Left: share of each state's agricultural area in fields up to a given ",
-      "size. Where a curve crosses 50%, half of the area lies in larger\n",
-      "fields: the size of the field the typical hectare lies in (right). ",
-      "For BB and NI, the field blocks are shown as well (dotted)."
-    ),
+    title = plot_title("Where the farmland lies: in small or in large fields?", corrected),
+    subtitle = share_subtitle,
     caption = caption_fields,
-    theme = theme_charts()
+    theme = theme_charts() + title_theme(corrected)
   )
+}
 
 save_plot(
-  "plots/field_size_area_share.png",
-  plot_share,
+  plot_file("field_size_area_share", FALSE),
+  plot_area_share(fields),
   width = 15, height = 8, dpi = 300, bg = "white"
+)
+
+save_plot(
+  plot_file("field_size_area_share", TRUE),
+  plot_area_share(fields_corrected, corrected = TRUE),
+  width = 15, height = 8.6, dpi = 300, bg = "white"
 )
 
 # 4. zoom windows -------------------------------------------------------------
@@ -708,7 +758,7 @@ zoom_windows <- hex_units |>
   left_join(hex_units |> select(hex, collection, short, state), by = "hex") |>
   mutate(
     # rows from small to large polygons, as the columns
-    unit = fct_relevel(unit, "reference parcel", "field", "field block"),
+    unit = fct_relevel(fct_drop(unit), "reference parcel", "field", "field block"),
     window = map(hex, \(h) {
       st_buffer(st_centroid(hexagons[h]), zoom_km * 500, endCapStyle = "SQUARE")
     })
@@ -821,9 +871,13 @@ crops <- collections$collection |>
   list_rbind()
 
 # polygons dominated by one crop; class 111 (other agricultural use) is no crop
-crop_fields <- fields |>
-  inner_join(crops, by = c("collection", "id")) |>
-  filter(dlr_share >= min_share, dlr_class != 111L)
+single_crop <- function(fields) {
+  fields |>
+    inner_join(crops, by = c("collection", "id")) |>
+    filter(dlr_share >= min_share, dlr_class != 111L)
+}
+crop_fields <- single_crop(fields)
+crop_fields_corrected <- single_crop(fields_corrected)
 
 top_classes <- crop_fields |>
   group_by(dlr_class) |>
@@ -841,19 +895,6 @@ crop_labels <- legend |>
     )
   )
 
-crop_medians <- crop_fields |>
-  filter(dlr_class %in% top_classes) |>
-  group_by(dlr_class, short, unit) |>
-  summarise(n = n(), median_ha = median(area_ha), .groups = "drop") |>
-  filter(n >= crop_min_n) |>
-  left_join(crop_labels, by = "dlr_class") |>
-  mutate(
-    crop_label = fct_reorder(crop_label, median_ha, .fun = median),
-    short = factor(short, levels = collections$short),
-    # two lines, the facets of reference parcels are narrow
-    unit = fct_relabel(unit, \(u) str_replace(unit_labels[u], " ", "\n"))
-  )
-
 # agreement with the declared crops, for the subtitle
 validation <- read_csv("results/fields_ftw_dlr_validation.csv", show_col_types = FALSE) |>
   group_by(collection, year) |>
@@ -866,248 +907,307 @@ validation_text <- str_c(
   collapse = ", "
 )
 
-plot_crop <- crop_medians |>
-  ggplot(aes(short, crop_label, fill = median_ha)) +
-  geom_tile(colour = "white", linewidth = 0.8) +
-  geom_text(
-    aes(label = scales::label_number(accuracy = 0.1)(median_ha), colour = text_on_size(median_ha)),
-    size = 3.2
-  ) +
-  scale_colour_identity() +
-  scale_fill_size(name = "Median field size") +
-  scale_x_discrete(position = "top") +
-  facet_grid(cols = vars(unit), scales = "free_x", space = "free_x") +
-  labs(
-    title = "Field size by crop",
-    subtitle = str_wrap(str_glue(
-      "Median size of the polygons where one crop of the DLR CropTypes map ",
-      "{dlr_year} covers \u2265 {scales::label_percent()(min_share)} of the ",
-      "area, in ha. Check against the crops the farmers declared (same ",
-      "year, single-crop fields): {validation_text} of the area agree."
-    ), 110),
-    caption = str_c(
-      str_wrap(caption_fields, 140), "\n",
-      str_remove(caption, " Borders: Natural Earth\\.")
-    ),
-    x = NULL,
-    y = NULL
-  ) +
-  theme_charts() +
-  theme(
-    panel.grid = element_blank(),
-    plot.title.position = "plot",
-    plot.caption.position = "plot",
-    axis.text.y.left = ggtext::element_markdown(size = rel(1)),
-    axis.text.x.top = element_text(face = "bold"),
-    strip.text = element_text(face = "bold", lineheight = 1.1, margin = margin(b = 6)),
-    strip.placement = "outside",
-    panel.spacing.x = unit(1.2, "lines")
-  ) +
-  theme_legend_bottom()
+# sections 5 to 7 are drawn for the fields as published and with the field
+# blocks corrected, with the same crops
+plot_crop_tiles <- function(crop_fields, corrected = FALSE) {
+  crop_medians <- crop_fields |>
+    filter(dlr_class %in% top_classes) |>
+    group_by(dlr_class, short, unit) |>
+    summarise(n = n(), median_ha = median(area_ha), .groups = "drop") |>
+    filter(n >= crop_min_n) |>
+    left_join(crop_labels, by = "dlr_class") |>
+    mutate(
+      crop_label = fct_reorder(crop_label, median_ha, .fun = median),
+      short = factor(short, levels = collections$short),
+      # two lines, the facets of reference parcels are narrow
+      unit = fct_relabel(unit, \(u) str_replace(unit_labels[u], " ", "\n"))
+    )
+
+  crop_medians |>
+    ggplot(aes(short, crop_label, fill = median_ha)) +
+    geom_tile(colour = "white", linewidth = 0.8) +
+    geom_text(
+      aes(label = scales::label_number(accuracy = 0.1)(median_ha), colour = text_on_size(median_ha)),
+      size = 3.2
+    ) +
+    scale_colour_identity() +
+    scale_fill_size(name = "Median field size") +
+    scale_x_discrete(position = "top") +
+    facet_grid(cols = vars(unit), scales = "free_x", space = "free_x") +
+    labs(
+      title = plot_title("Field size by crop", corrected),
+      subtitle = str_wrap(str_glue(
+        "Median size of the polygons where one crop of the DLR CropTypes map ",
+        "{dlr_year} covers \u2265 {scales::label_percent()(min_share)} of the ",
+        "area, in ha. Check against the crops the farmers declared (same ",
+        "year, single-crop fields): {validation_text} of the area agree.",
+        if (corrected) str_c(" ", corrected_note) else ""
+      ), 110),
+      caption = str_c(
+        str_wrap(caption_fields, 140), "\n",
+        str_remove(caption, " Borders: Natural Earth\\.")
+      ),
+      x = NULL,
+      y = NULL
+    ) +
+    theme_charts() +
+    theme(
+      panel.grid = element_blank(),
+      plot.title.position = "plot",
+      plot.caption.position = "plot",
+      axis.text.y.left = ggtext::element_markdown(size = rel(1)),
+      axis.text.x.top = element_text(face = "bold"),
+      strip.text = element_text(face = "bold", lineheight = 1.1, margin = margin(b = 6)),
+      strip.placement = "outside",
+      panel.spacing.x = unit(1.2, "lines")
+    ) +
+    theme_legend_bottom() +
+    title_theme(corrected)
+}
 
 save_plot(
-  "plots/field_size_by_crop.png",
-  plot_crop,
+  plot_file("field_size_by_crop", FALSE),
+  plot_crop_tiles(crop_fields),
   width = 12, height = 9, dpi = 300, bg = "white"
+)
+
+save_plot(
+  plot_file("field_size_by_crop", TRUE),
+  plot_crop_tiles(crop_fields_corrected, corrected = TRUE),
+  width = 12, height = 9.6, dpi = 300, bg = "white"
 )
 
 # 6. field size distribution by crop -----------------------------------------
 
 # all states pooled; crops grown mostly where field blocks are mapped (east)
 # look larger partly because of the blocks
-crop_ridges <- crop_fields |>
-  filter(dlr_class %in% top_classes) |>
-  left_join(crop_labels, by = "dlr_class") |>
-  left_join(legend |> select(dlr_class = value, colour), by = "dlr_class") |>
-  mutate(crop_label = fct_reorder(crop_label, area_ha, .fun = median))
+plot_crop_ridges <- function(crop_fields, corrected = FALSE) {
+  crop_ridges <- crop_fields |>
+    filter(dlr_class %in% top_classes) |>
+    left_join(crop_labels, by = "dlr_class") |>
+    left_join(legend |> select(dlr_class = value, colour), by = "dlr_class") |>
+    mutate(crop_label = fct_reorder(crop_label, area_ha, .fun = median))
 
-crop_ridge_medians <- crop_ridges |>
-  group_by(crop_label, colour) |>
-  summarise(n = n(), median_ha = median(area_ha), .groups = "drop") |>
-  mutate(label_colour = text_on_white(colour))
+  crop_ridge_medians <- crop_ridges |>
+    group_by(crop_label, colour) |>
+    summarise(n = n(), median_ha = median(area_ha), .groups = "drop") |>
+    mutate(label_colour = text_on_white(colour))
 
-plot_crop_ridges <- crop_ridges |>
-  ggplot(aes(area_ha, crop_label)) +
-  ggridges::geom_density_ridges(
-    aes(fill = colour),
-    colour = "white",
-    bandwidth = 0.08,
-    scale = 1.2,
-    rel_min_height = 0.005,
-    alpha = 0.8,
-    linewidth = 0.5,
-    quantile_lines = TRUE,
-    quantiles = 2
-  ) +
-  # median of each crop at the right edge
-  geom_text(
-    aes(
-      x = size_limits[2], y = crop_label, colour = label_colour,
-      label = str_c(label_ha(median_ha), "  (n = ", scales::label_comma()(n), ")")
-    ),
-    data = crop_ridge_medians,
-    inherit.aes = FALSE,
-    hjust = 1,
-    vjust = -0.6,
-    size = 3.3
-  ) +
-  scale_fill_identity() +
-  scale_colour_identity() +
-  scale_x_log10(
-    breaks = c(0.1, size_breaks, 100, 500),
-    labels = label_ha_short,
-    expand = expansion(0)
-  ) +
-  scale_y_discrete(expand = expansion(add = c(0.2, 1.4))) +
-  # zoom instead of scale limits, so polygons beyond them still count
-  coord_cartesian(xlim = size_limits) +
-  labs(
-    title = "Field size distribution by crop",
-    subtitle = str_wrap(str_glue(
-      "Size of the polygons where one crop of the DLR CropTypes map ",
-      "{dlr_year} covers \u2265 {scales::label_percent()(min_share)} of the ",
-      "area, all states pooled (fields, reference parcels and field blocks); ",
-      "line and label: median. Crops grown mainly in the states with field ",
-      "blocks (SH, SN, ST, TH) look larger partly because blocks hold ",
-      "several fields."
-    ), 112),
-    caption = str_c(
-      str_wrap(caption_fields, 140), "\n",
-      str_remove(caption, " Borders: Natural Earth\\.")
-    ),
-    x = "Polygon size (log scale)",
-    y = NULL
-  ) +
-  theme_charts() +
-  theme(
-    plot.title.position = "plot",
-    plot.caption.position = "plot",
-    panel.grid.major.y = element_blank(),
-    axis.text.y.left = ggtext::element_markdown(size = rel(1), vjust = 0),
-    axis.title.x = element_text(margin = margin(t = 12)),
-    plot.subtitle = element_text(margin = margin(t = 12, b = 4))
-  )
+  crop_ridges |>
+    ggplot(aes(area_ha, crop_label)) +
+    ggridges::geom_density_ridges(
+      aes(fill = colour),
+      colour = "white",
+      bandwidth = 0.08,
+      scale = 1.2,
+      rel_min_height = 0.005,
+      alpha = 0.8,
+      linewidth = 0.5,
+      quantile_lines = TRUE,
+      quantiles = 2
+    ) +
+    # median of each crop at the right edge
+    geom_text(
+      aes(
+        x = size_limits[2], y = crop_label, colour = label_colour,
+        label = str_c(label_ha(median_ha), "  (n = ", scales::label_comma()(n), ")")
+      ),
+      data = crop_ridge_medians,
+      inherit.aes = FALSE,
+      hjust = 1,
+      vjust = -0.6,
+      size = 3.3
+    ) +
+    scale_fill_identity() +
+    scale_colour_identity() +
+    scale_x_log10(
+      breaks = c(0.1, size_breaks, 100, 500),
+      labels = label_ha_short,
+      expand = expansion(0)
+    ) +
+    scale_y_discrete(expand = expansion(add = c(0.2, 1.4))) +
+    # zoom instead of scale limits, so polygons beyond them still count
+    coord_cartesian(xlim = size_limits) +
+    labs(
+      title = plot_title("Field size distribution by crop", corrected),
+      subtitle = str_wrap(str_glue(
+        "Size of the polygons where one crop of the DLR CropTypes map ",
+        "{dlr_year} covers \u2265 {scales::label_percent()(min_share)} of the ",
+        if (corrected) {
+          str_c(
+            "area, all states pooled (fields, reference parcels and field ",
+            "estimates); line and label: median. ", corrected_note
+          )
+        } else {
+          str_c(
+            "area, all states pooled (fields, reference parcels and field blocks); ",
+            "line and label: median. Crops grown mainly in the states with field ",
+            "blocks (SH, SN, ST, TH) look larger partly because blocks hold ",
+            "several fields."
+          )
+        }
+      ), 112),
+      caption = str_c(
+        str_wrap(caption_fields, 140), "\n",
+        str_remove(caption, " Borders: Natural Earth\\.")
+      ),
+      x = "Polygon size (log scale)",
+      y = NULL
+    ) +
+    theme_charts() +
+    theme(
+      plot.title.position = "plot",
+      plot.caption.position = "plot",
+      panel.grid.major.y = element_blank(),
+      axis.text.y.left = ggtext::element_markdown(size = rel(1), vjust = 0),
+      axis.title.x = element_text(margin = margin(t = 12)),
+      plot.subtitle = element_text(margin = margin(t = 12, b = 4))
+    ) +
+    title_theme(corrected)
+}
 
 save_plot(
-  "plots/field_size_by_crop_ridges.png",
-  plot_crop_ridges,
+  plot_file("field_size_by_crop_ridges", FALSE),
+  plot_crop_ridges(crop_fields),
   width = 12, height = 10, dpi = 300, bg = "white"
+)
+
+save_plot(
+  plot_file("field_size_by_crop_ridges", TRUE),
+  plot_crop_ridges(crop_fields_corrected, corrected = TRUE),
+  width = 12, height = 10.5, dpi = 300, bg = "white"
 )
 
 # 7. crop mix by field size ----------------------------------------------------
 
 # area of each crop per field size class, single-crop polygons of all states;
 # column width = area of the size class (marimekko)
-size_class_breaks <- c(min_ha, 1, 2, 5, 10, 20, 50, Inf)
+# from 0: corrected field blocks can be smaller than min_ha
+size_class_breaks <- c(0, 1, 2, 5, 10, 20, 50, Inf)
 size_class_labels <- c(
   "< 1 ha", "1\u20132 ha", "2\u20135 ha", "5\u201310 ha",
   "10\u201320 ha", "20\u201350 ha", "> 50 ha"
 )
 other_crops_label <- "Other crops"
 
-crop_mix <- crop_fields |>
-  mutate(
-    size_class = cut(area_ha, size_class_breaks, size_class_labels, right = FALSE),
-    dlr_class = if_else(dlr_class %in% top_classes, dlr_class, NA_integer_)
-  ) |>
-  group_by(size_class, dlr_class) |>
-  summarise(area_ha = sum(area_ha), .groups = "drop") |>
-  left_join(legend |> select(dlr_class = value, class, colour), by = "dlr_class") |>
-  mutate(
-    class = coalesce(class, other_crops_label),
-    colour = coalesce(colour, "grey80")
-  ) |>
-  group_by(size_class) |>
-  mutate(class_area = sum(area_ha), share = area_ha / class_area) |>
-  ungroup()
+plot_crop_mix <- function(crop_fields, corrected = FALSE) {
+  crop_mix <- crop_fields |>
+    mutate(
+      size_class = cut(area_ha, size_class_breaks, size_class_labels, right = FALSE),
+      dlr_class = if_else(dlr_class %in% top_classes, dlr_class, NA_integer_)
+    ) |>
+    group_by(size_class, dlr_class) |>
+    summarise(area_ha = sum(area_ha), .groups = "drop") |>
+    left_join(legend |> select(dlr_class = value, class, colour), by = "dlr_class") |>
+    mutate(
+      class = coalesce(class, other_crops_label),
+      colour = coalesce(colour, "grey80")
+    ) |>
+    group_by(size_class) |>
+    mutate(class_area = sum(area_ha), share = area_ha / class_area) |>
+    ungroup()
 
-# crops in the order of their median field size, as in the ridgelines (small
-# at the bottom); other crops on top
-crop_order <- c(
-  levels(fct_reorder(
-    crop_fields |> filter(dlr_class %in% top_classes) |>
-      left_join(legend |> select(dlr_class = value, class), by = "dlr_class") |>
-      pull(class),
-    crop_fields |> filter(dlr_class %in% top_classes) |> pull(area_ha),
-    .fun = median
-  )),
-  other_crops_label
-)
-
-# column positions: cumulative area of the size classes
-crop_mix_columns <- crop_mix |>
-  distinct(size_class, class_area) |>
-  arrange(size_class) |>
-  mutate(
-    xmax = cumsum(class_area) / sum(class_area),
-    xmin = lag(xmax, default = 0)
+  # crops in the order of their median field size, as in the ridgelines (small
+  # at the bottom); other crops on top
+  crop_order <- c(
+    levels(fct_reorder(
+      crop_fields |> filter(dlr_class %in% top_classes) |>
+        left_join(legend |> select(dlr_class = value, class), by = "dlr_class") |>
+        pull(class),
+      crop_fields |> filter(dlr_class %in% top_classes) |> pull(area_ha),
+      .fun = median
+    )),
+    other_crops_label
   )
 
-crop_mix_rects <- crop_mix |>
-  mutate(class = factor(class, levels = crop_order)) |>
-  arrange(size_class, class) |>
-  group_by(size_class) |>
-  mutate(ymax = cumsum(share), ymin = lag(ymax, default = 0)) |>
-  ungroup() |>
-  left_join(crop_mix_columns |> select(size_class, xmin, xmax), by = "size_class")
+  # column positions: cumulative area of the size classes
+  crop_mix_columns <- crop_mix |>
+    distinct(size_class, class_area) |>
+    arrange(size_class) |>
+    mutate(
+      xmax = cumsum(class_area) / sum(class_area),
+      xmin = lag(xmax, default = 0)
+    )
 
-crop_colours <- crop_mix |>
-  distinct(class, colour) |>
-  deframe()
+  crop_mix_rects <- crop_mix |>
+    mutate(class = factor(class, levels = crop_order)) |>
+    arrange(size_class, class) |>
+    group_by(size_class) |>
+    mutate(ymax = cumsum(share), ymin = lag(ymax, default = 0)) |>
+    ungroup() |>
+    left_join(crop_mix_columns |> select(size_class, xmin, xmax), by = "size_class")
 
-plot_crop_mix <- crop_mix_rects |>
-  ggplot() +
-  geom_rect(
-    aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax, fill = class),
-    colour = "white",
-    linewidth = 0.4
-  ) +
-  # size class and its share of the area below each column
-  geom_text(
-    aes(
-      x = (xmin + xmax) / 2, y = -0.02,
-      label = str_c(size_class, "\n", scales::label_percent(accuracy = 1)(xmax - xmin))
-    ),
-    data = crop_mix_columns,
-    vjust = 1,
-    size = 3.3,
-    lineheight = 0.95,
-    colour = "grey25"
-  ) +
-  scale_fill_manual(values = crop_colours, breaks = rev(crop_order), name = NULL) +
-  scale_x_continuous(expand = expansion(0)) +
-  scale_y_continuous(
-    labels = scales::label_percent(),
-    expand = expansion(mult = c(0.09, 0.01))
-  ) +
-  labs(
-    title = "Which crops grow on small and on large fields?",
-    subtitle = str_wrap(str_glue(
-      "Share of each crop in the area of a field size class; column width = ",
-      "share of the class in the total area (below the size). Polygons where ",
-      "one crop of the DLR CropTypes map {dlr_year} covers ",
-      "\u2265 {scales::label_percent()(min_share)} of the area, all states ",
-      "pooled; field blocks hold several fields and shift crops to the large ",
-      "classes."
-    ), 105),
-    caption = str_c(
-      str_wrap(caption_fields, 140), "\n",
-      str_remove(caption, " Borders: Natural Earth\\.")
-    ),
-    x = NULL,
-    y = "Share of the area of the size class"
-  ) +
-  theme_charts() +
-  theme(
-    panel.grid = element_blank(),
-    axis.text.x = element_blank(),
-    plot.subtitle = element_text(margin = margin(t = 12, b = 12))
-  )
+  crop_colours <- crop_mix |>
+    distinct(class, colour) |>
+    deframe()
+
+  crop_mix_rects |>
+    ggplot() +
+    geom_rect(
+      aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax, fill = class),
+      colour = "white",
+      linewidth = 0.4
+    ) +
+    # size class and its share of the area below each column
+    geom_text(
+      aes(
+        x = (xmin + xmax) / 2, y = -0.02,
+        label = str_c(size_class, "\n", scales::label_percent(accuracy = 1)(xmax - xmin))
+      ),
+      data = crop_mix_columns,
+      vjust = 1,
+      size = 3.3,
+      lineheight = 0.95,
+      colour = "grey25"
+    ) +
+    scale_fill_manual(values = crop_colours, breaks = rev(crop_order), name = NULL) +
+    scale_x_continuous(expand = expansion(0)) +
+    scale_y_continuous(
+      labels = scales::label_percent(),
+      expand = expansion(mult = c(0.09, 0.01))
+    ) +
+    labs(
+      title = plot_title("Which crops grow on small and on large fields?", corrected),
+      subtitle = str_wrap(str_glue(
+        "Share of each crop in the area of a field size class; column width = ",
+        "share of the class in the total area (below the size). Polygons where ",
+        "one crop of the DLR CropTypes map {dlr_year} covers ",
+        "\u2265 {scales::label_percent()(min_share)} of the area, all states ",
+        if (corrected) {
+          str_c("pooled. ", corrected_note)
+        } else {
+          str_c(
+            "pooled; field blocks hold several fields and shift crops to the large ",
+            "classes."
+          )
+        }
+      ), 105),
+      caption = str_c(
+        str_wrap(caption_fields, 140), "\n",
+        str_remove(caption, " Borders: Natural Earth\\.")
+      ),
+      x = NULL,
+      y = "Share of the area of the size class"
+    ) +
+    theme_charts() +
+    theme(
+      panel.grid = element_blank(),
+      axis.text.x = element_blank(),
+      plot.subtitle = element_text(margin = margin(t = 12, b = 12))
+    ) +
+    title_theme(corrected)
+}
 
 save_plot(
-  "plots/field_size_crop_mix.png",
-  plot_crop_mix,
+  plot_file("field_size_crop_mix", FALSE),
+  plot_crop_mix(crop_fields),
   width = 13, height = 9, dpi = 300, bg = "white"
+)
+
+save_plot(
+  plot_file("field_size_crop_mix", TRUE),
+  plot_crop_mix(crop_fields_corrected, corrected = TRUE),
+  width = 13, height = 9.6, dpi = 300, bg = "white"
 )
 
 # 8. field edges ---------------------------------------------------------------
@@ -1205,12 +1305,15 @@ hex_crops <- exactextractr::exact_extract(
   progress = FALSE
 )
 
-hex_stats$crops_effective <- hex_crops |>
-  as.matrix() |>
-  apply(1, \(counts) {
-    p <- counts[counts > 0] / sum(counts)
-    if (length(p) == 0) NA_real_ else exp(-sum(p * log(p)))
-  })
+hex_diversity <- tibble(
+  hex = hex_stats$hex,
+  crops_effective = hex_crops |>
+    as.matrix() |>
+    apply(1, \(counts) {
+      p <- counts[counts > 0] / sum(counts)
+      if (length(p) == 0) NA_real_ else exp(-sum(p * log(p)))
+    })
+)
 
 # terciles of field size and crop diversity; 3 x 3 colours, field size from
 # light to orange as in the size map, diversity from light to blue
@@ -1222,73 +1325,91 @@ bivariate_colours <- tribble(
 )
 
 terciles <- \(x) quantile(x, c(1 / 3, 2 / 3), na.rm = TRUE)
-size_terciles <- terciles(hex_stats$median_ha)
-crop_terciles <- terciles(hex_stats$crops_effective)
 
-hex_bivariate <- hex_stats |>
-  filter(!is.na(crops_effective)) |>
-  mutate(
-    size_class = findInterval(median_ha, size_terciles) + 1,
-    crop_class = findInterval(crops_effective, crop_terciles) + 1
-  ) |>
-  left_join(bivariate_colours, by = c("size_class", "crop_class"))
+# drawn for the fields as published and with the field blocks corrected; the
+# size terciles are those of the fields given
+plot_crop_diversity <- function(hex_stats, labels, corrected = FALSE) {
+  hex_stats <- hex_stats |>
+    left_join(hex_diversity, by = "hex")
+  size_terciles <- terciles(hex_stats$median_ha)
+  crop_terciles <- terciles(hex_stats$crops_effective)
 
-map_bivariate <- hex_bivariate |>
-  ggplot() +
-  geom_sf(aes(fill = colour, colour = colour), linewidth = 0.1) +
-  scale_fill_identity() +
-  scale_colour_identity() +
-  geom_borders() +
-  geom_state_labels() +
-  coord_sf(crs = definitions$crs_reference, datum = NA) +
-  theme_maps()
+  hex_bivariate <- hex_stats |>
+    filter(!is.na(crops_effective)) |>
+    mutate(
+      size_class = findInterval(median_ha, size_terciles) + 1,
+      crop_class = findInterval(crops_effective, crop_terciles) + 1
+    ) |>
+    left_join(bivariate_colours, by = c("size_class", "crop_class"))
 
-legend_bivariate <- bivariate_colours |>
-  ggplot(aes(size_class, crop_class, fill = colour)) +
-  geom_tile(colour = "white", linewidth = 0.8) +
-  scale_fill_identity() +
-  scale_x_continuous(
-    breaks = c(1.5, 2.5),
-    labels = label_ha_short(signif(size_terciles, 2)),
-    expand = expansion(0)
-  ) +
-  scale_y_continuous(
-    breaks = c(1.5, 2.5),
-    labels = scales::label_number(accuracy = 0.1)(crop_terciles),
-    expand = expansion(0)
-  ) +
-  labs(x = "Larger fields \u2192", y = "More crops \u2192") +
-  coord_equal() +
-  theme_minimal(base_size = 11) +
-  theme(
-    panel.grid = element_blank(),
-    axis.title = element_text(face = "bold", size = rel(0.95)),
-    plot.background = element_rect(fill = "white", colour = NA)
-  )
+  map_bivariate <- hex_bivariate |>
+    ggplot() +
+    geom_sf(aes(fill = colour, colour = colour), linewidth = 0.1) +
+    scale_fill_identity() +
+    scale_colour_identity() +
+    geom_borders() +
+    geom_state_labels(labels) +
+    coord_sf(crs = definitions$crs_reference, datum = NA) +
+    theme_maps()
 
-plot_bivariate <- map_bivariate +
+  legend_bivariate <- bivariate_colours |>
+    ggplot(aes(size_class, crop_class, fill = colour)) +
+    geom_tile(colour = "white", linewidth = 0.8) +
+    scale_fill_identity() +
+    scale_x_continuous(
+      breaks = c(1.5, 2.5),
+      labels = label_ha_short(signif(size_terciles, 2)),
+      expand = expansion(0)
+    ) +
+    scale_y_continuous(
+      breaks = c(1.5, 2.5),
+      labels = scales::label_number(accuracy = 0.1)(crop_terciles),
+      expand = expansion(0)
+    ) +
+    labs(x = "Larger fields \u2192", y = "More crops \u2192") +
+    coord_equal() +
+    theme_minimal(base_size = 11) +
+    theme(
+      panel.grid = element_blank(),
+      axis.title = element_text(face = "bold", size = rel(0.95)),
+      plot.background = element_rect(fill = "white", colour = NA)
+    )
+
+  blocks_note <- if (corrected) {
+    corrected_note
+  } else {
+    "Field blocks (SH, SN, ST, TH) hold several fields and are larger."
+}
+
+map_bivariate +
   # legend in the empty south-west (no data for BW and RP)
   inset_element(legend_bivariate, left = 0, bottom = 0, right = 0.26, top = 0.26) +
   plot_annotation(
-    title = "Large fields, few crops?",
+    title = plot_title("Large fields, few crops?", corrected),
     subtitle = str_wrap(str_glue(
       "Median field size per hexagon against the crop diversity of the DLR ",
       "CropTypes map {dlr_year}: effective number of crops = exp(Shannon ",
       "index), the number of equally common crops with the same diversity. ",
-      "Classes are terciles of the hexagons. Field blocks (SH, SN, ST, TH) ",
-      "hold several fields and are larger. {not_covered}"
+      "Classes are terciles of the hexagons. {blocks_note} {not_covered}"
     ), 95),
     caption = str_c(
       str_wrap(caption_fields, 110), "\n",
       str_wrap(caption, 110)
     ),
-    theme = theme_maps()
+    theme = theme_maps() + title_theme(corrected)
   )
+}
 
 save_plot(
-  "plots/field_size_crop_diversity_map.png",
-  plot_bivariate,
+  plot_file("field_size_crop_diversity_map", FALSE),
+  plot_crop_diversity(hex_stats, state_labels),
   width = 10, height = 12.5, dpi = 300, bg = "white"
+)
+
+save_plot(
+  plot_file("field_size_crop_diversity_map", TRUE),
+  plot_crop_diversity(hex_stats_corrected, state_labels_corrected, corrected = TRUE),
+  width = 10, height = 13.2, dpi = 300, bg = "white"
 )
 
 # 10. field sizes over time ---------------------------------------------------
