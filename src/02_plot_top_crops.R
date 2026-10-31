@@ -204,6 +204,7 @@ plot_ranking <- function() {
       nudge_x = side * 0.12,
       direction = "y",
       size = 3.6,
+      family = plot_font,
       box.padding = 0.15,
       segment.colour = "grey60",
       segment.size = 0.3
@@ -251,12 +252,10 @@ plot_ranking <- function() {
       x = NULL,
       y = NULL
     ) +
-    theme_minimal(base_size = 14) +
+    theme_minimal(base_size = 14, base_family = plot_font) +
     theme(
       plot.title = element_text(face = "bold", size = rel(1.4), hjust = 0.5),
-      plot.subtitle = element_text(
-        colour = "grey35", hjust = 0.5, margin = margin(t = 6, b = 16)
-      ),
+      plot.subtitle = element_subtitle(),
       plot.caption = element_text(
         colour = "grey50", size = rel(0.7), margin = margin(t = 18)
       ),
@@ -276,7 +275,7 @@ walk(years, \(year) {
       subtitle = str_glue(
         "Each map highlights one crop in black, ranked by total area; ",
         "other agricultural land is shown faded. ",
-        "{10 * plot_res_factor} m resolution.\n{labels_explained}"
+        "{10 * plot_res_factor} m resolution. {labels_explained}"
       ),
       caption = caption
     )
@@ -339,7 +338,7 @@ plot_grid <- wrap_plots(map_rows, ncol = 1) +
     subtitle = str_glue(
       "Rows are years, columns are ranks by total area; each map highlights ",
       "one crop in black, other agricultural land is faded. ",
-      "Label colours mark the crop.\n{labels_explained}"
+      "Label colours mark the crop. {labels_explained}"
     ),
     caption = caption,
     theme = theme_maps()
