@@ -243,9 +243,12 @@ strip_label_markdown <- function(title, detail, tone_colour) {
 
 theme_strip_markdown <- function() {
   theme(
+    # line height in the style: marquee ignores the element's (default 1.6)
     strip.text = marquee::element_marquee(
-      size = 11, lineheight = 1.15, margin = margin(4, 4, 4, 4),
-      style = marquee::classic_style(align = "center", margin = marquee::trbl(0))
+      size = 11, margin = margin(4, 4, 4, 4),
+      style = marquee::classic_style(
+        align = "center", lineheight = 1.15, margin = marquee::trbl(0)
+      )
     )
   )
 }
@@ -497,7 +500,8 @@ apply_plot_text <- function(plot, width = NULL) {
 element_subtitle <- function(margin = ggplot2::margin(t = 6, b = 16), ...) {
   settings <- definitions$plot_text %||% list()
   align <- if (identical(settings$align, "left")) "left" else "center"
-  style <- marquee::classic_style(align = align, margin = marquee::trbl(0))
+  # line height in the style: marquee ignores the element's (default 1.6)
+  style <- marquee::classic_style(align = align, lineheight = 1.2, margin = marquee::trbl(0))
   # justified only in the paragraphs: textshaping 1.0.5 crashes (at random)
   # when it justifies an empty string, which marquee passes for the body
   if (isTRUE(settings$justify)) {
@@ -505,7 +509,6 @@ element_subtitle <- function(margin = ggplot2::margin(t = 6, b = 16), ...) {
   }
   marquee::element_marquee(
     colour = "grey35",
-    lineheight = 1.2,
     # set to the plot width by save_plot()
     width = unit(1, "npc"),
     margin = margin,

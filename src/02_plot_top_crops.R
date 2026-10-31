@@ -112,10 +112,11 @@ plot_map_row <- function(year_plot) {
     filter(year == year_plot, rank <= top_n) |>
     arrange(rank) |>
     mutate(
-      # title: rank and crop, long names ("Other winter cereals") wrapped;
+      # title: rank and crop on one line (a wrapped "Other winter cereals"
+      # would make its row of strips higher than the others);
       # detail: area · share of agricultural land · share of Germany
       class_label = strip_label_markdown(
-        title = str_wrap(str_c("#", rank, " ", class), width = 16),
+        title = str_c("#", rank, " ", class),
         detail = str_c(
           scales::label_number(accuracy = 100, big.mark = ",")(area_km2),
           " km\u00B2 \u00B7 ", percent(area_km2 / agri_area_km2),
