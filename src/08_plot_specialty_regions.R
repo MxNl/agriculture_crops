@@ -16,7 +16,8 @@
 #    side, for the contrast with the surroundings
 # 4. the windows are read (GDAL picks the overview that fits the plot
 #    resolution) and shown as panels, next to a map of Germany with the
-#    numbered windows
+#    numbered windows; the specialty crop in one colour (specialty_colour),
+#    all other classes in grey
 #
 # - plots/specialty_regions_<year>.png
 #
@@ -296,8 +297,10 @@ read_window <- function(extent) {
 
 windows$cells <- map(windows$extent, read_window)
 
-# only the specialty crop of a panel in its colour, all other classes in grey
-# shades (lightness of their own colour), so the crop stands out
+# the specialty crop of a panel in one strong colour (the same in all panels,
+# so no legend is needed), all other classes in grey shades (lightness of
+# their own colour), so the crop stands out
+highlight <- definitions$specialty_colour
 grey_of <- function(colour) {
   lightness <- farver::decode_colour(colour, to = "lab")[, "l"]
   grey(scales::rescale(lightness, to = c(0.45, 0.9), from = c(0, 100)))
@@ -311,7 +314,7 @@ plot_window <- function(number, code, class, place, window_km, share, lq, crop_h
     mutate(
       fill = if_else(
         as.integer(as.character(code)) == focus,
-        ctm_legend$colour[match(focus, ctm_legend$code)],
+        highlight,
         ctm_legend$grey[match(as.integer(as.character(code)), ctm_legend$code)]
       )
     )
@@ -326,7 +329,8 @@ plot_window <- function(number, code, class, place, window_km, share, lq, crop_h
       expand = FALSE
     ) +
     labs(
-      title = str_c(number, "  ", class),
+      # marquee: the crop name in the highlight colour
+      title = str_c(number, "  {", highlight, " ", class, "}"),
       subtitle = str_glue(
         "{place} \u00B7 {window_km} \u00D7 {window_km} km\n",
         "Region: {scales::label_comma(accuracy = 100)(crop_ha)} ha, ",
@@ -336,7 +340,10 @@ plot_window <- function(number, code, class, place, window_km, share, lq, crop_h
     ) +
     theme_maps() +
     theme(
-      plot.title = element_text(size = rel(0.95), hjust = 0, margin = margin(b = 2)),
+      plot.title = marquee::element_marquee(
+        size = rel(0.95), hjust = 0, margin = margin(b = 2),
+        style = marquee::classic_style(weight = "bold", align = "left", margin = marquee::trbl(0))
+      ),
       plot.subtitle = element_text(size = rel(0.75), hjust = 0, lineheight = 1.1, margin = margin(b = 6)),
       panel.background = element_rect(fill = "white", colour = "grey80", linewidth = 0.3),
       plot.margin = margin(4, 8, 4, 8)
@@ -346,31 +353,9 @@ plot_window <- function(number, code, class, place, window_km, share, lq, crop_h
 panels <- windows |> pmap(plot_window)
 
 states_ctm <- st_transform(states, crs(ctm_search))
-legend_anchor <- st_coordinates(st_centroid(st_union(states_ctm)))
-
-# legend: the specialty crops of the panels and the grey shades of the rest
-legend_items <- windows |>
-  distinct(code, class) |>
-  left_join(ctm_legend |> select(code, colour), by = "code") |>
-  add_row(
-    code = NA, class = "Other crops and land (grey shades)",
-    colour = grey(0.7)
-  ) |>
-  mutate(key = fct_inorder(str_wrap(class, 22)))
 
 overview <- ggplot() +
   geom_sf(data = states_ctm, fill = "grey95", colour = "grey70", linewidth = 0.2) +
-  # invisible points (size 0) that carry the legend of all panels
-  geom_point(
-    aes(x, y, fill = key),
-    data = legend_items |> mutate(x = legend_anchor[1], y = legend_anchor[2]),
-    shape = 22, size = 0, stroke = 0
-  ) +
-  scale_fill_manual(
-    values = set_names(legend_items$colour, legend_items$key),
-    name = NULL
-  ) +
-  guides(fill = guide_legend(ncol = 1, override.aes = list(size = 6))) +
   geom_sf(data = window_polygons, fill = NA, colour = "grey15", linewidth = 0.5) +
   # numbers above the frames, with some space
   geom_label(
@@ -391,40 +376,39 @@ overview <- ggplot() +
   theme_maps() +
   theme(plot.margin = margin(4, 4, 4, 12))
 
-# panels in 3 columns; last column: overview map on top, the legend below
+# panels in 3 columns; last column: the overview map over all rows (centred,
+# its height is set by its width)
 n_panel_cols <- 3
 n_panel_rows <- max(2, ceiling(length(panels) / n_panel_cols))
 side_col <- n_panel_cols + 1
 # patchwork::area(), terra has an area() too
 design <- c(
-  patchwork::area(1, side_col, n_panel_rows - 1, side_col),
-  patchwork::area(n_panel_rows, side_col, n_panel_rows, side_col),
+  patchwork::area(1, side_col, n_panel_rows, side_col),
   map(seq_along(panels), \(i) {
     patchwork::area((i - 1) %/% n_panel_cols + 1, (i - 1) %% n_panel_cols + 1)
   }) |> do.call(what = c)
 )
 
-plot_specialty <- wrap_plots(c(list(overview, guide_area()), panels), design = design) +
-  plot_layout(widths = c(rep(1, n_panel_cols), 1.4), guides = "collect") +
+# words in the highlight colour, bold (marquee)
+colour_text <- \(text) str_c("{", highlight, " **", text, "**}")
+
+plot_specialty <- wrap_plots(c(list(overview), panels), design = design) +
+  plot_layout(widths = c(rep(1, n_panel_cols), 1.4)) +
   plot_annotation(
     title = "Regions specialised in one crop",
-    subtitle = str_wrap(str_glue(
+    subtitle = str_glue(
       "Regions where a crop that is rare in Germany dominates the farmland: ",
       "neighbouring {definitions$specialty_cell_km} km cells with ",
       "\u2265 {scales::label_percent()(definitions$specialty_cell_share)} of the ",
       "farmland and \u2265 {definitions$specialty_min_lq}\u00D7 the German share, ",
       "the largest per crop (at most {definitions$specialty_max_per_crop}). ",
       "Windows show the region and its surroundings, sizes differ; the ",
-      "specialty crop in colour (as in the DLR crop maps), all other classes ",
-      "in grey. Ordered by crop (most specialised first) and region area; ",
-      "numbers as on the map."
-    ), 130),
+      "{colour_text('specialty crop')} in colour, all other classes in grey. ",
+      "Ordered by crop (most specialised first) and region area; numbers as ",
+      "on the map."
+    ),
     caption = caption_ctm,
     theme = theme_maps()
-  ) &
-  theme(
-    legend.direction = "vertical",
-    legend.text = element_text(size = rel(0.85))
   )
 
 save_plot(

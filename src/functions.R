@@ -180,13 +180,26 @@ rank_crops_overall <- function(counts) {
 
 # plot helpers ---------------------------------------------------------------
 
+# font of all plots (font in definitions.yml). A font that is not installed
+# is downloaded from Google Fonts into cache/fonts/ (and registered from there
+# in later sessions); without it the system's sans-serif font is used
+plot_font <- definitions$font %||% "sans"
+local({
+  cached <- list.files("cache/fonts", "\\.(ttf|otf)$", full.names = TRUE, recursive = TRUE)
+  if (length(cached) > 0) systemfonts::add_fonts(cached)
+  dir.create("cache/fonts", showWarnings = FALSE, recursive = TRUE)
+  systemfonts::require_font(
+    plot_font,
+    fallback = "sans", dir = "cache/fonts", error = FALSE, verbose = FALSE
+  )
+})
+
+# subtitles are marquee markdown (element_subtitle(), below)
 theme_maps <- function() {
-  theme_void(base_size = 14) +
+  theme_void(base_size = 14, base_family = plot_font) +
     theme(
       plot.title = element_text(face = "bold", size = rel(1.4), hjust = 0.5),
-      plot.subtitle = element_text(
-        colour = "grey35", hjust = 0.5, margin = margin(t = 6, b = 16)
-      ),
+      plot.subtitle = element_subtitle(),
       plot.caption = element_text(
         colour = "grey50", size = rel(0.7), margin = margin(t = 14)
       ),
@@ -201,8 +214,8 @@ theme_maps <- function() {
 
 # facet strips filled with each crop's legend colour and tone-on-tone text;
 # crops must be in facet order and have columns colour and tone_colour.
-# With markdown = TRUE the text colour comes from the label's HTML (ggh4x only
-# accepts plain text elements per strip), see strip_label_markdown()
+# With markdown = TRUE the text colour comes from the label's markup (ggh4x
+# only accepts plain text elements per strip), see strip_label_markdown()
 strip_crops <- function(crops, markdown = FALSE) {
   # outline in the fill colour, i.e. no visible border
   background <- elem_list_rect(fill = crops$colour, colour = crops$colour)
@@ -217,20 +230,25 @@ strip_crops <- function(crops, markdown = FALSE) {
   }
 }
 
-# two-line markdown strip label: bold title, smaller detail line, both in
-# the tone colour; needs theme(strip.text = ggtext::element_markdown())
+# two-line strip label in marquee markdown: bold title, smaller detail line,
+# both in the tone colour; a backslash at the end of a line breaks it. Needs
+# theme_strip_markdown()
 strip_label_markdown <- function(title, detail, tone_colour) {
   str_c(
-    "<span style='color:", tone_colour, "'>",
-    "**", str_replace_all(title, "\n", "<br>"), "**<br>",
-    "<span style='font-size:9pt'>", detail, "</span></span>"
+    # gsub(fixed = TRUE): str_replace_all() would drop the backslash
+    "{", tone_colour, " **", gsub("\n", "**\\\n**", title, fixed = TRUE), "**\\\n",
+    "{.9 ", detail, "}}"
   )
 }
 
 theme_strip_markdown <- function() {
   theme(
-    strip.text = ggtext::element_markdown(
-      size = 11, lineheight = 1.15, halign = 0.5, margin = margin(4, 4, 4, 4)
+    # line height in the style: marquee ignores the element's (default 1.6)
+    strip.text = marquee::element_marquee(
+      size = 11, margin = margin(4, 4, 4, 4),
+      style = marquee::classic_style(
+        align = "center", lineheight = 1.15, margin = marquee::trbl(0)
+      )
     )
   )
 }
@@ -238,12 +256,10 @@ theme_strip_markdown <- function() {
 # theme of the charts, as in the ranking and rotation charts: centred title
 # and subtitle
 theme_charts <- function(base_size = 14) {
-  theme_minimal(base_size = base_size) +
+  theme_minimal(base_size = base_size, base_family = plot_font) +
     theme(
       plot.title = element_text(face = "bold", size = rel(1.4), hjust = 0.5),
-      plot.subtitle = element_text(
-        colour = "grey35", hjust = 0.5, margin = margin(t = 6, b = 16)
-      ),
+      plot.subtitle = element_subtitle(),
       plot.caption = element_text(
         colour = "grey50", size = rel(0.7), margin = margin(t = 18)
       ),
@@ -475,15 +491,17 @@ apply_plot_text <- function(plot, width = NULL) {
 }
 
 # subtitle as marquee markdown (e.g. {#1b7837 **word**} for a coloured word),
-# wrapped to the width of the plot instead of str_wrap(). Aligned as the
-# title (align in plot_text); with justify: true as justified text, the last
-# line aligned as the title. Further arguments (e.g. margin) go to
-# element_marquee(); plot.subtitle overrides must use element_subtitle() too,
-# element_text() turns the subtitle back into plain text
+# wrapped to the width of the plot instead of str_wrap(); the default of
+# theme_maps() and theme_charts(). Aligned as the title (align in
+# plot_text); with justify: true as justified text, the last line aligned as
+# the title. Further arguments (e.g. margin) go to element_marquee();
+# plot.subtitle overrides must use element_subtitle() too, element_text()
+# turns the subtitle back into plain text
 element_subtitle <- function(margin = ggplot2::margin(t = 6, b = 16), ...) {
   settings <- definitions$plot_text %||% list()
   align <- if (identical(settings$align, "left")) "left" else "center"
-  style <- marquee::classic_style(align = align, margin = marquee::trbl(0))
+  # line height in the style: marquee ignores the element's (default 1.6)
+  style <- marquee::classic_style(align = align, lineheight = 1.2, margin = marquee::trbl(0))
   # justified only in the paragraphs: textshaping 1.0.5 crashes (at random)
   # when it justifies an empty string, which marquee passes for the body
   if (isTRUE(settings$justify)) {
@@ -491,7 +509,6 @@ element_subtitle <- function(margin = ggplot2::margin(t = 6, b = 16), ...) {
   }
   marquee::element_marquee(
     colour = "grey35",
-    lineheight = 1.2,
     # set to the plot width by save_plot()
     width = unit(1, "npc"),
     margin = margin,

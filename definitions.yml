@@ -149,11 +149,20 @@ specialty_window_max_km: 60
 specialty_panels: 9
 specialty_max_per_crop: 2
 specialty_min_distance_km: 60
+# colour of the specialty crop in the panels (all other land in grey)
+specialty_colour: "#E4572E"
+
+# font of all plots, downloaded from Google Fonts if not installed:
+# - Noto Sans: BGR corporate design
+# - Calibri: UBA corporate design (official substitute of its house font Meta
+#   Offc, which is licensed; use "Meta Offc" where it is installed). Carlito
+#   is the metric-compatible open version where Calibri is missing
+font: Noto Sans Display
 
 # text around the plots (field size plots and crop maps): show the title,
 # subtitle and caption, and align title and subtitle "center" or "left".
-# justify: subtitles of the field size plots as justified text (block text,
-# last line aligned as the title)
+# justify: subtitles as justified text (block text, last line aligned as the
+# title)
 plot_text:
   title: true
   subtitle: true

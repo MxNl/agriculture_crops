@@ -33,3 +33,6 @@ CLAUDE.local.md
 .RData
 .Rproj.user/
 Rplots.pdf
+
+# Fonts --------------------------------------------------------------
+/cache/fonts

@@ -311,19 +311,17 @@ plot_rotation <- rotation |>
     title = str_glue("What follows what: crop rotation, {min(years)}\u2013{max(years)}"),
     subtitle = str_glue(
       "Area of each crop by the crop grown on the same land the next year, ",
-      "mean of all {length(years) - 1} year pairs.\nLabels: share of the ",
+      "mean of all {length(years) - 1} year pairs. Labels: share of the ",
       "crop's area (\u2265 10%)."
     ),
     caption = str_remove(caption, " Borders: Natural Earth\\."),
     x = NULL,
     y = NULL
   ) +
-  theme_minimal(base_size = 14) +
+  theme_minimal(base_size = 14, base_family = plot_font) +
   theme(
     plot.title = element_text(face = "bold", size = rel(1.4), hjust = 0.5),
-    plot.subtitle = element_text(
-      colour = "grey35", hjust = 0.5, margin = margin(t = 6, b = 16)
-    ),
+    plot.subtitle = element_subtitle(),
     plot.caption = element_text(
       colour = "grey50", size = rel(0.7), margin = margin(t = 18)
     ),

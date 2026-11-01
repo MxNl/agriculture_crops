@@ -589,7 +589,7 @@ text_cell <- function(label, rot = 0, y = 0.5) {
     label,
     rot = rot,
     y = y,
-    gp = grid::gpar(fontsize = 13, fontface = "bold", lineheight = 1.1)
+    gp = grid::gpar(fontfamily = plot_font, fontsize = 13, fontface = "bold", lineheight = 1.1)
   ))
 }
 column_headers <- str_c(
@@ -665,15 +665,19 @@ top_classes <- crop_fields |>
   slice_max(area_ha, n = crop_top_n) |>
   pull(dlr_class)
 
-# crop names with a square in the legend colour of the crop maps
+# crop names with a square in the legend colour of the crop maps (marquee)
 crop_labels <- legend |>
   filter(value %in% top_classes) |>
-  transmute(
-    dlr_class = value,
-    crop_label = str_c(
-      "<span style='color:", colour, "'>\u25A0</span> ", class
-    )
+  transmute(dlr_class = value, crop_label = str_c("{", colour, " \u25A0} ", class))
+
+# the crop labels on the y axis
+element_crop_labels <- function(...) {
+  marquee::element_marquee(
+    hjust = 1,
+    style = marquee::classic_style(align = "right", margin = marquee::trbl(0)),
+    ...
   )
+}
 
 crop_medians <- crop_fields |>
   filter(dlr_class %in% top_classes) |>
@@ -732,7 +736,7 @@ plot_crop <- crop_medians |>
     plot.title.position = "plot",
     plot.caption.position = "plot",
     plot.subtitle = element_subtitle(),
-    axis.text.y.left = ggtext::element_markdown(size = rel(1)),
+    axis.text.y.left = element_crop_labels(),
     axis.text.x.top = element_text(face = "bold"),
     strip.text = element_text(face = "bold", lineheight = 1.1, margin = margin(b = 6)),
     strip.placement = "outside",
@@ -818,7 +822,7 @@ plot_crop_ridges <- crop_ridges |>
     plot.title.position = "plot",
     plot.caption.position = "plot",
     panel.grid.major.y = element_blank(),
-    axis.text.y.left = ggtext::element_markdown(size = rel(1), vjust = 0),
+    axis.text.y.left = element_crop_labels(vjust = 0),
     axis.title.x = element_text(margin = margin(t = 12)),
     plot.subtitle = element_subtitle(margin = margin(t = 12, b = 4))
   )
@@ -1094,7 +1098,7 @@ legend_bivariate <- bivariate_colours |>
   ) +
   labs(x = "Larger fields \u2192", y = "More crops \u2192") +
   coord_equal() +
-  theme_minimal(base_size = 11) +
+  theme_minimal(base_size = 11, base_family = plot_font) +
   theme(
     panel.grid = element_blank(),
     axis.title = element_text(face = "bold", size = rel(0.95)),
@@ -1184,6 +1188,7 @@ plot_time_lines <- time_stats |>
     hjust = 0.1,
     vjust = -0.4,
     size = 3.6,
+    family = plot_font,
     fontface = "bold",
     # horizontal text, also where the line bends
     straight = TRUE
