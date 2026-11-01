@@ -157,7 +157,7 @@ specialty_colour: "#E4572E"
 # - Calibri: UBA corporate design (official substitute of its house font Meta
 #   Offc, which is licensed; use "Meta Offc" where it is installed). Carlito
 #   is the metric-compatible open version where Calibri is missing
-font: Noto Sans
+font: Noto Sans Display
 
 # text around the plots (field size plots and crop maps): show the title,
 # subtitle and caption, and align title and subtitle "center" or "left".
