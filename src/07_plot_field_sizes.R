@@ -20,6 +20,8 @@
 #   hexagon and state
 # - plots/field_size_crop_diversity_map.png: bivariate map of field size and
 #   crop diversity (needs the 500 m class counts of src/03_crop_change_stats.R)
+# - plots/field_size_crop_diversity_<first>-<last>_map.png: the same with the
+#   crop diversity of all years pooled (crop rotation counts)
 # - plots/field_size_time_series.png: field sizes over the yearly editions of
 #   the collections in field_time_series
 #
@@ -572,7 +574,8 @@ plot_zoom_window <- function(collection, state, window) {
     theme_maps() +
     theme(
       plot.title = element_text(size = rel(0.9), margin = margin(b = 2)),
-      plot.subtitle = element_text(size = rel(0.8), margin = margin(b = 6)),
+      # centred below the title (the theme's subtitle is marquee)
+      plot.subtitle = element_text(size = rel(0.8), hjust = 0.5, margin = margin(b = 6)),
       panel.background = element_rect(fill = "grey95", colour = NA),
       plot.margin = margin(4, 8, 4, 8)
     )
@@ -894,6 +897,12 @@ crop_colours <- crop_mix |>
   distinct(class, colour) |>
   deframe()
 
+# crop names beside the last column instead of a legend, as in the ranking
+# chart of src/02_plot_top_crops.R: at the middle of each crop's band
+crop_mix_labels <- crop_mix_rects |>
+  filter(size_class == last(levels(size_class))) |>
+  mutate(x = xmax, y = (ymin + ymax) / 2)
+
 plot_crop_mix <- crop_mix_rects |>
   ggplot() +
   geom_rect(
@@ -913,8 +922,25 @@ plot_crop_mix <- crop_mix_rects |>
     lineheight = 0.95,
     colour = "grey25"
   ) +
-  scale_fill_manual(values = crop_colours, breaks = rev(crop_order), name = NULL) +
-  scale_x_continuous(expand = expansion(0)) +
+  # ggrepel spreads the names of thin bands vertically; labels are anchored
+  # at the column edge, so leader lines end there
+  ggrepel::geom_text_repel(
+    aes(x, y, label = class),
+    data = crop_mix_labels,
+    hjust = 0,
+    nudge_x = 0.03,
+    direction = "y",
+    xlim = c(1.01, NA),
+    size = 3.6,
+    family = plot_font,
+    box.padding = 0.15,
+    segment.colour = "grey60",
+    segment.size = 0.3
+  ) +
+  scale_fill_manual(values = crop_colours, guide = "none") +
+  # room for the crop names right of the columns
+  scale_x_continuous(expand = expansion(add = c(0, 0.24))) +
+  coord_cartesian(clip = "off") +
   scale_y_continuous(
     labels = scales::label_percent(),
     expand = expansion(mult = c(0.09, 0.01))
@@ -1033,23 +1059,41 @@ save_plot(
 # crop diversity per hexagon from the 500 m class counts of
 # src/03_crop_change_stats.R: effective number of crops = exp(Shannon index)
 # of the crop classes, i.e. the number of equally common crops with the same
-# diversity
-class_counts <- rast(str_glue("results/croptypes_dlr_{dlr_year}_500m_class_counts.tif"))
-crop_layers <- intersect(str_c("class_", crop_values), names(class_counts))
+# diversity. For several years the counts are pooled: a hexagon whose crops
+# change from year to year counts as more diverse than one that grows the
+# same mix every year
+path_class_counts <- \(year) str_glue("results/croptypes_dlr_{year}_500m_class_counts.tif")
 
-hex_crops <- exactextractr::exact_extract(
-  class_counts[[crop_layers]],
-  st_sf(hex = hex_stats$hex, geometry = st_geometry(hex_stats)),
-  fun = "sum",
-  progress = FALSE
-)
+effective_crops <- function(years_pooled) {
+  class_counts <- years_pooled |>
+    map(\(year) {
+      r <- rast(path_class_counts(year))
+      r[[intersect(str_c("class_", crop_values), names(r))]]
+    })
+  # layers of all years, in case a class is missing in one of them
+  layers <- reduce(map(class_counts, names), union)
+  pooled <- class_counts |>
+    map(\(r) {
+      missing <- setdiff(layers, names(r))
+      if (length(missing) > 0) {
+        r <- c(r, rep(r[[1]] * 0, length(missing)) |> set_names(missing))
+      }
+      r[[layers]]
+    }) |>
+    reduce(`+`)
 
-hex_stats$crops_effective <- hex_crops |>
-  as.matrix() |>
-  apply(1, \(counts) {
-    p <- counts[counts > 0] / sum(counts)
-    if (length(p) == 0) NA_real_ else exp(-sum(p * log(p)))
-  })
+  exactextractr::exact_extract(
+    pooled,
+    st_sf(hex = hex_stats$hex, geometry = st_geometry(hex_stats)),
+    fun = "sum",
+    progress = FALSE
+  ) |>
+    as.matrix() |>
+    apply(1, \(counts) {
+      p <- counts[counts > 0] / sum(counts)
+      if (length(p) == 0) NA_real_ else exp(-sum(p * log(p)))
+    })
+}
 
 # terciles of field size and crop diversity; 3 x 3 colours, field size from
 # light to orange as in the size map, diversity from light to blue
@@ -1061,72 +1105,103 @@ bivariate_colours <- tribble(
 )
 
 terciles <- \(x) quantile(x, c(1 / 3, 2 / 3), na.rm = TRUE)
-size_terciles <- terciles(hex_stats$median_ha)
-crop_terciles <- terciles(hex_stats$crops_effective)
 
-hex_bivariate <- hex_stats |>
-  filter(!is.na(crops_effective)) |>
-  mutate(
-    size_class = findInterval(median_ha, size_terciles) + 1,
-    crop_class = findInterval(crops_effective, crop_terciles) + 1
-  ) |>
-  left_join(bivariate_colours, by = c("size_class", "crop_class"))
+# bivariate map of field size and crop diversity (one value per hexagon of
+# hex_stats); the diversity terciles are those of the given diversity
+plot_bivariate <- function(crops_effective, title, subtitle) {
+  size_terciles <- terciles(hex_stats$median_ha)
+  crop_terciles <- terciles(crops_effective)
 
-map_bivariate <- hex_bivariate |>
-  ggplot() +
-  geom_sf(aes(fill = colour, colour = colour), linewidth = 0.1) +
-  scale_fill_identity() +
-  scale_colour_identity() +
-  geom_borders() +
-  geom_state_labels() +
-  coord_sf(crs = definitions$crs_reference, datum = NA) +
-  theme_maps()
+  hex_bivariate <- hex_stats |>
+    mutate(crops_effective = crops_effective) |>
+    filter(!is.na(crops_effective)) |>
+    mutate(
+      size_class = findInterval(median_ha, size_terciles) + 1,
+      crop_class = findInterval(crops_effective, crop_terciles) + 1
+    ) |>
+    left_join(bivariate_colours, by = c("size_class", "crop_class"))
 
-legend_bivariate <- bivariate_colours |>
-  ggplot(aes(size_class, crop_class, fill = colour)) +
-  geom_tile(colour = "white", linewidth = 0.8) +
-  scale_fill_identity() +
-  scale_x_continuous(
-    breaks = c(1.5, 2.5),
-    labels = label_ha_short(signif(size_terciles, 2)),
-    expand = expansion(0)
-  ) +
-  scale_y_continuous(
-    breaks = c(1.5, 2.5),
-    labels = scales::label_number(accuracy = 0.1)(crop_terciles),
-    expand = expansion(0)
-  ) +
-  labs(x = "Larger fields \u2192", y = "More crops \u2192") +
-  coord_equal() +
-  theme_minimal(base_size = 11, base_family = plot_font) +
-  theme(
-    panel.grid = element_blank(),
-    axis.title = element_text(face = "bold", size = rel(0.95)),
-    plot.background = element_rect(fill = "white", colour = NA)
-  )
+  map_bivariate <- hex_bivariate |>
+    ggplot() +
+    geom_sf(aes(fill = colour, colour = colour), linewidth = 0.1) +
+    scale_fill_identity() +
+    scale_colour_identity() +
+    geom_borders() +
+    geom_state_labels() +
+    coord_sf(crs = definitions$crs_reference, datum = NA) +
+    theme_maps()
 
-plot_bivariate <- map_bivariate +
-  # legend in the empty south-west (no data for BW and RP)
-  inset_element(legend_bivariate, left = 0, bottom = 0, right = 0.26, top = 0.26) +
-  plot_annotation(
-    title = "Large fields, few crops?",
-    subtitle = str_glue(
-      "Median arable field size per hexagon against the crop diversity of the DLR ",
-      "CropTypes map {dlr_year}: effective number of crops = exp(Shannon ",
-      "index), the number of equally common crops with the same diversity. ",
-      "Classes are terciles of the hexagons. Field blocks (SH, SN, ST, TH) ",
-      "hold several fields and are larger. {not_covered}"
-    ),
-    caption = str_c(
-      str_wrap(caption_fields, 110), "\n",
-      str_wrap(caption, 110)
-    ),
-    theme = theme_maps() + theme(plot.subtitle = element_subtitle())
-  )
+  legend_bivariate <- bivariate_colours |>
+    ggplot(aes(size_class, crop_class, fill = colour)) +
+    geom_tile(colour = "white", linewidth = 0.8) +
+    scale_fill_identity() +
+    scale_x_continuous(
+      breaks = c(1.5, 2.5),
+      labels = label_ha_short(signif(size_terciles, 2)),
+      expand = expansion(0)
+    ) +
+    scale_y_continuous(
+      breaks = c(1.5, 2.5),
+      labels = scales::label_number(accuracy = 0.1)(crop_terciles),
+      expand = expansion(0)
+    ) +
+    labs(x = "Larger fields \u2192", y = "More crops \u2192") +
+    coord_equal() +
+    theme_minimal(base_size = 11, base_family = plot_font) +
+    theme(
+      panel.grid = element_blank(),
+      axis.title = element_text(face = "bold", size = rel(0.95)),
+      plot.background = element_rect(fill = "white", colour = NA)
+    )
+
+  map_bivariate +
+    # legend in the empty south-west (no data for BW and RP)
+    inset_element(legend_bivariate, left = 0, bottom = 0, right = 0.26, top = 0.26) +
+    plot_annotation(
+      title = title,
+      subtitle = subtitle,
+      caption = str_c(
+        str_wrap(caption_fields, 110), "\n",
+        str_wrap(caption, 110)
+      ),
+      theme = theme_maps() + theme(plot.subtitle = element_subtitle())
+    )
+}
+
+diversity_text <- str_c(
+  "effective number of crops = exp(Shannon index), the number of equally ",
+  "common crops with the same diversity. Classes are terciles of the ",
+  "hexagons. Field blocks (SH, SN, ST, TH) hold several fields and are ",
+  "larger. ", not_covered
+)
 
 save_plot(
   "plots/field_size_crop_diversity_map.png",
-  plot_bivariate,
+  plot_bivariate(
+    effective_crops(dlr_year),
+    title = "Large fields, few crops?",
+    subtitle = str_glue(
+      "Median arable field size per hexagon against the crop diversity of the DLR ",
+      "CropTypes map {dlr_year}: {diversity_text}"
+    )
+  ),
+  width = 10, height = 12.5, dpi = 300, bg = "white"
+)
+
+# the same with the crops of all years pooled, so crop rotation counts: an
+# area with one dominant crop in dlr_year may grow other crops in other years
+years_text <- str_glue("{min(years)}\u2013{max(years)}")
+save_plot(
+  str_glue("plots/field_size_crop_diversity_{min(years)}-{max(years)}_map.png"),
+  plot_bivariate(
+    effective_crops(years),
+    title = "Large fields, few crops over the years?",
+    subtitle = str_glue(
+      "Median arable field size per hexagon against the crop diversity of all ",
+      "DLR CropTypes maps {years_text} pooled, so a hexagon whose crops change ",
+      "from year to year counts as more diverse: {diversity_text}"
+    )
+  ),
   width = 10, height = 12.5, dpi = 300, bg = "white"
 )
 
