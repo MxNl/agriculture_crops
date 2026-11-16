@@ -6,6 +6,8 @@
 # - plots/crop_repeat_<first>-<last>.png: on pixels that grew a crop at least
 #   once, the mean number of years they grew it; separates monoculture from
 #   rotation
+# - plots/crop_change_..._hex.png, crop_repeat_..._hex.png: the same per
+#   hexagon of field_hex_km2 (as the field size maps), easier to read
 # - plots/crop_rotation_<first>-<last>.png: which crop follows which in the
 #   next year, national mean annual area of all consecutive year pairs
 #
@@ -93,6 +95,63 @@ plot_crop_maps <- function(cells, facets, fill_scale, title, subtitle) {
     )
 }
 
+# hexagon versions: the 500 m counts summed per hexagon of field_hex_km2 (the
+# grid of the field size maps); st_make_grid() takes the distance between
+# opposite edges, area = sqrt(3) / 2 * d^2
+hex_km2 <- definitions$field_hex_km2
+hex_d <- sqrt(2 * hex_km2 * 1e6 / sqrt(3))
+hexagons <- st_make_grid(states, cellsize = hex_d, square = FALSE)
+hexagons <- st_sf(hex = seq_along(hexagons), geometry = hexagons) |>
+  st_filter(st_union(states))
+
+# sums of the layers of a raster per hexagon (columns named as the layers)
+hex_sums <- function(r) {
+  exactextractr::exact_extract(r, hexagons, fun = "sum", progress = FALSE) |>
+    set_names(names(r)) |>
+    as_tibble()
+}
+
+# hexagon values (one column per crop, named crop_<class value>) to long
+hex_to_long <- function(values, values_to) {
+  values |>
+    mutate(hex = hexagons$hex) |>
+    pivot_longer(
+      -hex,
+      names_to = "value",
+      names_prefix = "crop_",
+      values_to = values_to
+    ) |>
+    filter(!is.na(.data[[values_to]])) |>
+    mutate(value = as.integer(value))
+}
+
+plot_crop_hex <- function(hex_values, facets, fill_scale, title, subtitle) {
+  hex_values |>
+    left_join(facets |> select(value, label), by = "value") |>
+    left_join(hexagons, by = "hex") |>
+    st_as_sf() |>
+    ggplot() +
+    # outline in the fill colour, without it thin white seams show between
+    # the hexagons (anti-aliasing)
+    geom_sf(aes(fill = fill, colour = fill), linewidth = 0.1) +
+    fill_scale +
+    geom_borders() +
+    facet_wrap2(~label, nrow = 1, strip = strip_crops(facets)) +
+    coord_sf(crs = definitions$crs_reference, datum = NA) +
+    labs(title = title, subtitle = subtitle, caption = caption) +
+    theme_maps() +
+    theme(
+      legend.position = "bottom",
+      legend.key.width = unit(2.5, "cm"),
+      legend.key.height = unit(0.4, "cm"),
+      legend.title = element_text(vjust = 0.9, margin = margin(r = 10))
+    )
+}
+
+# pixels the 500 m cells of each hexagon hold (50^2 per cell, as in the masks
+# of the cells), the reference for the farmland thresholds
+hex_pixels <- hex_sums(rast(path_class_counts(years[1]))[["farmland"]] * 0 + 50^2)[[1]]
+
 period_label <- \(p) str_glue("{min(p)}\u2013{max(p)}")
 
 # 1. period change of the share of farmland ---------------------------------
@@ -131,23 +190,33 @@ national_delta <- counts |>
     )
   )
 
-plot_change <- plot_crop_maps(
-  cells = raster_to_long(share_delta, "fill"),
-  facets = crop_facets(national_delta),
-  # binned diverging scale; the middle bin (±2 pp) is neutral
-  fill_scale = scale_fill_fermenter(
+# binned diverging scale; the middle bin (±2 pp) is neutral
+scale_change <- function(aesthetics = "fill") {
+  scale_fill_fermenter(
     palette = "RdBu",
     direction = 1,
     breaks = c(-15, -10, -5, -2, 2, 5, 10, 15),
     limits = c(-delta_limit, delta_limit),
     oob = scales::squish,
     labels = scales::label_number(style_positive = "plus", suffix = " pp"),
-    name = "Change in share of farmland\n(percentage points, pp)"
-  ),
-  title = str_glue(
-    "Where crops gained and lost ground: {period_label(period_first)} ",
-    "vs {period_label(period_second)}"
-  ),
+    name = "Change in share of farmland\n(percentage points, pp)",
+    aesthetics = aesthetics
+  )
+}
+title_change <- str_glue(
+  "Where crops gained and lost ground: {period_label(period_first)} ",
+  "vs {period_label(period_second)}"
+)
+path_change <- str_glue(
+  "plots/crop_change_{min(period_first)}-{max(period_first)}_vs_",
+  "{min(period_second)}-{max(period_second)}"
+)
+
+plot_change <- plot_crop_maps(
+  cells = raster_to_long(share_delta, "fill"),
+  facets = crop_facets(national_delta),
+  fill_scale = scale_change(),
+  title = title_change,
   subtitle = str_glue(
     "Change of each crop's share of farmland per 500 m cell in percentage ",
     "points (pp, e.g. 20% \u2192 25% = +5 pp); blue = more, red = less. ",
@@ -156,11 +225,35 @@ plot_change <- plot_crop_maps(
 )
 
 save_plot(
-  str_glue(
-    "plots/crop_change_{min(period_first)}-{max(period_first)}_vs_",
-    "{min(period_second)}-{max(period_second)}.png"
-  ),
+  str_c(path_change, ".png"),
   plot_change,
+  width = 16, height = 7, dpi = 300, bg = "white"
+)
+
+# per hexagon: crop and farmland counts of each period summed; hexagons with
+# little farmland in either period are blank (same threshold as the cells)
+hex_first <- hex_sums(c(sum_layers(period_first, crop_layers), farmland_first))
+hex_second <- hex_sums(c(sum_layers(period_second, crop_layers), farmland_second))
+hex_enough <- hex_first$farmland / length(period_first) >= min_farmland_share * hex_pixels &
+  hex_second$farmland / length(period_second) >= min_farmland_share * hex_pixels
+hex_delta <- (100 * (hex_second[crop_layers] / hex_second$farmland -
+  hex_first[crop_layers] / hex_first$farmland)) |>
+  mutate(across(everything(), \(x) if_else(hex_enough, x, NA_real_))) |>
+  set_names(str_c("crop_", change_crops$value))
+
+save_plot(
+  str_c(path_change, "_hex.png"),
+  plot_crop_hex(
+    hex_values = hex_to_long(hex_delta, "fill"),
+    facets = crop_facets(national_delta),
+    fill_scale = scale_change(aesthetics = c("fill", "colour")),
+    title = title_change,
+    subtitle = str_glue(
+      "Change of each crop's share of farmland per hexagon of {hex_km2} km\u00B2 ",
+      "in percentage points (pp, e.g. 20% \u2192 25% = +5 pp); blue = more, ",
+      "red = less. Hexagons with < {100 * min_farmland_share}% farmland are blank."
+    )
+  ),
   width = 16, height = 7, dpi = 300, bg = "white"
 )
 
@@ -193,21 +286,27 @@ national_repeat <- tibble(
     )
   )
 
-plot_repeat <- plot_crop_maps(
-  cells = raster_to_long(mean_years, "fill"),
-  facets = crop_facets(national_repeat),
-  # one bin per year step: 1–2, 2–3, ... years
-  fill_scale = scale_fill_viridis_b(
+# one bin per year step: 1–2, 2–3, ... years
+scale_repeat <- function(aesthetics = "fill") {
+  scale_fill_viridis_b(
     option = "rocket",
     direction = -1,
     limits = c(1, length(years)),
     breaks = seq(2, length(years) - 1),
     show.limits = TRUE,
-    name = str_glue("Years grown (of {length(years)})")
-  ),
-  title = str_glue(
-    "How often crops return to the same field, {min(years)}\u2013{max(years)}"
-  ),
+    name = str_glue("Years grown (of {length(years)})"),
+    aesthetics = aesthetics
+  )
+}
+title_repeat <- str_glue(
+  "How often crops return to the same field, {min(years)}\u2013{max(years)}"
+)
+
+plot_repeat <- plot_crop_maps(
+  cells = raster_to_long(mean_years, "fill"),
+  facets = crop_facets(national_repeat),
+  fill_scale = scale_repeat(),
+  title = title_repeat,
   subtitle = str_glue(
     "Mean number of years a crop was grown on the land that grew it at ",
     "least once, per 500 m cell. Dark = repeated cultivation, ",
@@ -218,6 +317,33 @@ plot_repeat <- plot_crop_maps(
 save_plot(
   str_glue("plots/crop_repeat_{span}.png"),
   plot_repeat,
+  width = 16, height = 7, dpi = 300, bg = "white"
+)
+
+# per hexagon: years with the crop and pixels that grew it summed; blank
+# where those pixels are less than min_ever_share of the mean farmland
+hex_ever <- hex_sums(n_ever)
+hex_years <- hex_sums(sum_years)
+hex_farmland <- hex_sums(mean_farmland)[[1]]
+hex_mean_years <- map2(hex_years, hex_ever, \(y, n) {
+  if_else(n >= min_ever_share * hex_farmland & n > 0, y / n, NA_real_)
+}) |>
+  as_tibble() |>
+  set_names(str_c("crop_", change_crops$value))
+
+save_plot(
+  str_glue("plots/crop_repeat_{span}_hex.png"),
+  plot_crop_hex(
+    hex_values = hex_to_long(hex_mean_years, "fill"),
+    facets = crop_facets(national_repeat),
+    fill_scale = scale_repeat(aesthetics = c("fill", "colour")),
+    title = title_repeat,
+    subtitle = str_glue(
+      "Mean number of years a crop was grown on the land that grew it at ",
+      "least once, per hexagon of {hex_km2} km\u00B2. Dark = repeated ",
+      "cultivation, light = rotation."
+    )
+  ),
   width = 16, height = 7, dpi = 300, bg = "white"
 )
 
