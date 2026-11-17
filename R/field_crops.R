@@ -14,29 +14,16 @@
 #
 # The field polygons of the latest editions are newer than the latest DLR
 # map, so this assumes the polygons change little from one year to the next.
-# Needs the reprojected DLR rasters of src/01_reproject_landcover.R and the
-# downloads of src/05_field_sizes_stats.R. Outputs that exist are skipped.
-# Run from the project root.
-
-library(arrow)
-library(exactextractr)
-
-# legend, borders, settings and field boundary download
-source("src/functions.R")
-
-# settings ------------------------------------------------------------------
-
-collections <- bind_rows(definitions$field_collections)
-validation <- bind_rows(definitions$field_crop_validation)
-dlr_year <- max(years)
+# Targets field_crops (one branch per collection) and field_crop_validation.
 
 path_crops <- \(collection, year) {
   str_glue("results/fields_ftw_{collection}_dlr{year}.parquet")
 }
 path_validation <- "results/fields_ftw_dlr_validation.csv"
 
-if (!all(validation$year %in% years)) {
-  stop("field_crop_validation years must lie within years in definitions.yml")
+# collections that get a crop per polygon
+field_crop_collection_names <- function(definitions) {
+  bind_rows(definitions$field_collections)$collection
 }
 
 # declared crops (HCAT names) and the DLR class they correspond to; crops
@@ -95,11 +82,14 @@ majority_crop <- function(fields, year) {
     mutate(dlr_class = if_else(dlr_share > 0, dlr_class, NA_integer_))
 }
 
-crops_collection <- function(collection) {
+# crop per polygon of the latest edition of a collection, from the DLR map of
+# the latest year; returns the path. field_downloads and croptypes_files: the
+# targets this step reads (by their paths, download_fields() and
+# path_croptypes())
+crops_collection <- function(collection, field_downloads, croptypes_files, definitions) {
+  use_context(definitions)
+  dlr_year <- max(years)
   path_out <- path_crops(collection, dlr_year)
-  if (file.exists(path_out)) {
-    return(invisible())
-  }
   message(str_glue("{format(Sys.time(), '%H:%M')} {collection}"))
 
   download_fields(collection) |>
@@ -107,9 +97,9 @@ crops_collection <- function(collection) {
     select(id) |>
     majority_crop(dlr_year) |>
     write_parquet(path_out)
-}
 
-walk(collections$collection, crops_collection)
+  path_out
+}
 
 # validation against the declared crops -------------------------------------
 
@@ -143,23 +133,22 @@ validate_edition <- function(collection, year) {
     left_join(legend |> select(value, class), by = "value")
 }
 
-if (!file.exists(path_validation)) {
+# all editions in field_crop_validation; returns the path.
+# field_edition_downloads and croptypes_files: the targets this step reads
+# (by their paths, download_fields() and path_croptypes())
+validate_field_crops <- function(field_edition_downloads, croptypes_files, definitions,
+                                 legend_file) {
+  use_context(definitions, legend_file)
+  validation <- bind_rows(definitions$field_crop_validation)
+  if (!all(validation$year %in% years)) {
+    stop("field_crop_validation years must lie within years in definitions.yml")
+  }
+
   message(str_glue("{format(Sys.time(), '%H:%M')} validation"))
   validation |>
     pmap(\(collection, year) validate_edition(collection, year)) |>
     list_rbind() |>
     write_csv(path_validation)
+
+  path_validation
 }
-
-# checks ---------------------------------------------------------------------
-
-agreement <- read_csv(path_validation, show_col_types = FALSE) |>
-  group_by(collection, year) |>
-  summarise(
-    agreement = weighted.mean(agreement, area_ha),
-    agreement_single = weighted.mean(agreement_single, area_ha, na.rm = TRUE),
-    .groups = "drop"
-  )
-
-print(agreement)
-message("Done: DLR crops in results/fields_ftw_*_dlr*.parquet.")

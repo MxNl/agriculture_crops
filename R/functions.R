@@ -1,18 +1,44 @@
-# Shared settings, legend, borders and helpers for the DLR CropTypes scripts.
-# Sourced by src/02_plot_top_crops.R, src/03_crop_change_stats.R and
-# src/04_plot_crop_change.R. Run from the project root.
+# Shared settings, legend, borders and helpers of the pipeline steps
+# (_targets.R). Paths are relative to the project root.
 
-library(tidyverse)
-library(terra)
-library(sf)
-library(ggh4x)
+# context of the steps ---------------------------------------------------------
 
-# settings ------------------------------------------------------------------
+# The steps share the settings, the DLR legend and the state borders as
+# global objects (definitions, years, legend, crop_values, states,
+# borders_states, borders_country, plot_font), as the helpers below use them.
+# They come from targets: each step calls use_context() with them first, and
+# as its target lists them as arguments, a change of definitions.yml, the
+# legend or the borders reruns the step
+use_context <- function(definitions, legend_file = NULL, states = NULL) {
+  global <- globalenv()
+  assign("definitions", definitions, envir = global)
+  assign("years", sort(definitions$years), envir = global)
 
-definitions <- yaml::read_yaml("definitions.yml")
-years <- sort(definitions$years)
+  if (!is.null(legend_file)) {
+    legend <- read_legend(legend_file)
+    assign("legend", legend, envir = global)
+    assign(
+      "crop_values",
+      legend |> filter(!value %in% non_crop_values) |> pull(value),
+      envir = global
+    )
+  }
 
-path_legend <- "cache/croptypes_dlr/LEGEND_CropTypes_V02.txt"
+  if (!is.null(states)) {
+    assign("states", states, envir = global)
+    assign("borders_states", as_path_data(st_geometry(states)), envir = global)
+    assign("borders_country", as_path_data(st_union(states)), envir = global)
+  }
+
+  assign("plot_font", use_font(definitions$font %||% "sans"), envir = global)
+  invisible()
+}
+
+read_definitions <- function(path) yaml::read_yaml(path)
+
+# the settings a long-running step reads: its target reruns only when these
+# change, not on every change of definitions.yml (e.g. of plot settings)
+pick_settings <- function(definitions, names) definitions[names]
 
 # no data, permanent grassland, fruit trees/woody vegetation, other use
 non_crop_values <- c(0L, 83L, 100L, 111L)
@@ -30,6 +56,8 @@ path_croptypes <- function(year) {
 }
 
 # legend: class names from the DLR legend file -------------------------------
+
+path_legend <- "cache/croptypes_dlr/LEGEND_CropTypes_V02.txt"
 
 # DLR provides no colours. These follow the JRC EUCROPMAP palette, which uses
 # the USDA NASS Cropland Data Layer (CDL) colours; classes without an
@@ -61,31 +89,29 @@ colours <- tribble(
 )
 
 # lines look like "11<TAB>Winterweizen<TAB>winter wheat" (one uses a space)
-legend <- read_lines(path_legend, skip = 1) |>
-  str_trim() |>
-  str_match("^(\\d+)\\s+(.+)\\t(.+)$") |>
-  as_tibble(.name_repair = ~ c("line", "value", "class_de", "class")) |>
-  transmute(value = as.integer(value), class = str_to_sentence(class)) |>
-  left_join(colours, by = "value") |>
-  # labels on the crop colour: tone-on-tone, a darker shade on light colours
-  # and a lighter shade on dark ones
-  mutate(
-    is_light = farver::decode_colour(
-      coalesce(colour, "#FFFFFF"),
-      to = "lab"
-    )[, "l"] > 60,
-    text_colour = if_else(is_light, "black", "white"),
-    tone_colour = if_else(
-      is_light,
-      scales::col_darker(colour, 35),
-      scales::col_lighter(colour, 35)
-    )
-  ) |>
-  select(-is_light)
-
-crop_values <- legend |>
-  filter(!value %in% non_crop_values) |>
-  pull(value)
+read_legend <- function(path) {
+  read_lines(path, skip = 1) |>
+    str_trim() |>
+    str_match("^(\\d+)\\s+(.+)\\t(.+)$") |>
+    as_tibble(.name_repair = ~ c("line", "value", "class_de", "class")) |>
+    transmute(value = as.integer(value), class = str_to_sentence(class)) |>
+    left_join(colours, by = "value") |>
+    # labels on the crop colour: tone-on-tone, a darker shade on light colours
+    # and a lighter shade on dark ones
+    mutate(
+      is_light = farver::decode_colour(
+        coalesce(colour, "#FFFFFF"),
+        to = "lab"
+      )[, "l"] > 60,
+      text_colour = if_else(is_light, "black", "white"),
+      tone_colour = if_else(
+        is_light,
+        scales::col_darker(colour, 35),
+        scales::col_lighter(colour, 35)
+      )
+    ) |>
+    select(-is_light)
+}
 
 # state borders for orientation ----------------------------------------------
 
@@ -107,9 +133,12 @@ read_naturalearth <- function(type) {
   loaded
 }
 
-states <- read_naturalearth("admin_1_states_provinces") |>
-  filter(adm0_a3 == "DEU") |>
-  st_transform(definitions$crs_reference)
+# German states in the reference CRS (a target)
+read_states <- function(crs_reference) {
+  read_naturalearth("admin_1_states_provinces") |>
+    filter(adm0_a3 == "DEU") |>
+    st_transform(crs_reference)
+}
 
 # geom_raster needs a linear coordinate system, so borders are drawn as paths
 as_path_data <- function(x) {
@@ -119,9 +148,6 @@ as_path_data <- function(x) {
     as_tibble() |>
     mutate(group = str_c(L1, L2, sep = "_"))
 }
-
-borders_states <- as_path_data(st_geometry(states))
-borders_country <- as_path_data(st_union(states))
 
 # state and country borders as two thin, light geom_path layers (dark lines
 # would be confused with the near-black highlighted crop pixels)
@@ -146,23 +172,28 @@ geom_borders <- function() {
 
 # pixel counts per class ----------------------------------------------------
 
-# pixel counts per class at full resolution (cached in results/)
+path_pixel_counts <- \(year) str_glue("results/croptypes_dlr_{year}_pixel_counts.csv")
+
+# pixel counts per class at full resolution, written to results/ (a target
+# per year); returns the path
+write_pixel_counts <- function(croptypes_file, year, legend_file) {
+  croptypes <- rast(croptypes_file)
+  path_counts <- path_pixel_counts(year)
+
+  freq(croptypes) |>
+    as_tibble() |>
+    transmute(value = as.integer(value), count) |>
+    left_join(read_legend(legend_file) |> select(value, class), by = "value") |>
+    mutate(area_km2 = count * prod(res(croptypes)) / 1e6) |>
+    arrange(desc(count)) |>
+    write_csv(path_counts)
+
+  path_counts
+}
+
+# pixel counts of a year (written by write_pixel_counts()) with the legend
 count_classes <- function(year) {
-  path_counts <- str_glue("results/croptypes_dlr_{year}_pixel_counts.csv")
-
-  if (!file.exists(path_counts)) {
-    croptypes <- rast(path_croptypes(year))
-
-    freq(croptypes) |>
-      as_tibble() |>
-      transmute(value = as.integer(value), count) |>
-      left_join(legend |> select(value, class), by = "value") |>
-      mutate(area_km2 = count * prod(res(croptypes)) / 1e6) |>
-      arrange(desc(count)) |>
-      write_csv(path_counts)
-  }
-
-  read_csv(path_counts, show_col_types = FALSE) |>
+  read_csv(path_pixel_counts(year), show_col_types = FALSE) |>
     select(value, count, area_km2) |>
     left_join(legend, by = "value") |>
     mutate(year = year)
@@ -180,19 +211,20 @@ rank_crops_overall <- function(counts) {
 
 # plot helpers ---------------------------------------------------------------
 
-# font of all plots (font in definitions.yml). A font that is not installed
-# is downloaded from Google Fonts into cache/fonts/ (and registered from there
-# in later sessions); without it the system's sans-serif font is used
-plot_font <- definitions$font %||% "sans"
-local({
+# font of all plots (font in definitions.yml), set by use_context(). A font
+# that is not installed is downloaded from Google Fonts into cache/fonts/
+# (and registered from there in later sessions); without it the system's
+# sans-serif font is used
+use_font <- function(font) {
   cached <- list.files("cache/fonts", "\\.(ttf|otf)$", full.names = TRUE, recursive = TRUE)
   if (length(cached) > 0) systemfonts::add_fonts(cached)
   dir.create("cache/fonts", showWarnings = FALSE, recursive = TRUE)
   systemfonts::require_font(
-    plot_font,
+    font,
     fallback = "sans", dir = "cache/fonts", error = FALSE, verbose = FALSE
   )
-})
+  font
+}
 
 # subtitles are marquee markdown (element_subtitle(), below)
 theme_maps <- function() {
@@ -517,7 +549,15 @@ element_subtitle <- function(margin = ggplot2::margin(t = 6, b = 16), ...) {
   )
 }
 
-# ggsave() with the plot_text settings applied; width in inches
+# ggsave() with the plot_text settings applied; width in inches. The files
+# are recorded, so a plot step can return them (start_plot_log() at its
+# start, logged_plots() at its end) for its file target
+plot_log <- new.env()
+start_plot_log <- function() assign("files", character(), envir = plot_log)
+logged_plots <- function() plot_log$files
+
 save_plot <- function(filename, plot, width, ...) {
   ggsave(filename, apply_plot_text(plot, width), width = width, ...)
+  plot_log$files <- c(plot_log$files, as.character(filename))
+  invisible(filename)
 }

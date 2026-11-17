@@ -1,0 +1,66 @@
+---
+title: "1 · Crop ranking, crop change, repeat cultivation and rotation"
+config:
+  theme: base
+  themeVariables:
+    fontFamily: Noto Sans Display
+    fontSize: 15px
+    primaryTextColor: "#1f2937"
+    lineColor: "#94a3b8"
+    clusterBkg: "#f8fafc"
+    clusterBorder: "#e2e8f0"
+    titleColor: "#475569"
+  flowchart:
+    wrappingWidth: 230
+    padding: 16
+    nodeSpacing: 36
+    rankSpacing: 42
+    curve: basis
+---
+flowchart TB
+  classDef data fill:#dbeafe,stroke:#93c5fd,stroke-width:1px,color:#1e3a5f
+  classDef step fill:#f1f5f9,stroke:#cbd5e1,stroke-width:1px,color:#1f2937
+  classDef rule fill:#fef3c7,stroke:#f2cf6b,stroke-width:1px,color:#713f12
+  classDef out fill:#d1fae5,stroke:#86d9b9,stroke-width:1px,color:#064e3b
+  classDef key fill:#ffffff,stroke:#ffffff,color:#64748b
+
+  dlr[("D1 · DLR CropTypes 10 m, 2017–2024, reprojected to one grid")]:::data
+
+  subgraph rank ["Ranking · ADR 1, 2"]
+    direction TB
+    counts("Pixel counts per class and year"):::step
+    crops{{"Crops only: no grassland, fruit trees, other use"}}:::rule
+    ranked(["Top crop maps and ranking by area"]):::out
+    counts --> crops --> ranked
+  end
+
+  pass("One pass over all years · ADR 3"):::step
+  d5[("D5 · Class counts per 500 m cell and year, crop sequence of every pixel")]:::data
+  pass --> d5
+
+  subgraph change ["Crop change · ADR 4"]
+    direction TB
+    share("Share of farmland per period, 2017–2020 and 2021–2024"):::step
+    f1{{"Farmland ≥ 10 % in both periods"}}:::rule
+    o1(["Change in percentage points, per 500 m cell and per 25 km² hexagon"]):::out
+    share --> f1 --> o1
+  end
+
+  subgraph rep ["Repeat cultivation and rotation · ADR 5"]
+    direction TB
+    years("Mean years a crop was grown on the land that grew it at least once"):::step
+    f2{{"That land ≥ 5 % of the farmland"}}:::rule
+    o2(["Repeat cultivation, per 500 m cell and per hexagon"]):::out
+    trans("Transitions from year t to t + 1, national"):::step
+    o3(["Rotation flows"]):::out
+    years --> f2 --> o2
+    trans --> o3
+  end
+
+  dlr --> counts
+  dlr --> pass
+  d5 --> share
+  d5 --> years
+  d5 --> trans
+
+  linkStyle default stroke-width:1.2px

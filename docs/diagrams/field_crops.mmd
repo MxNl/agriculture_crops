@@ -1,0 +1,64 @@
+---
+title: "3 · Crops of the field polygons, validation and crop diversity"
+config:
+  theme: base
+  themeVariables:
+    fontFamily: Noto Sans Display
+    fontSize: 15px
+    primaryTextColor: "#1f2937"
+    lineColor: "#94a3b8"
+    clusterBkg: "#f8fafc"
+    clusterBorder: "#e2e8f0"
+    titleColor: "#475569"
+  flowchart:
+    wrappingWidth: 230
+    padding: 16
+    nodeSpacing: 36
+    rankSpacing: 42
+    curve: basis
+---
+flowchart TB
+  classDef data fill:#dbeafe,stroke:#93c5fd,stroke-width:1px,color:#1e3a5f
+  classDef step fill:#f1f5f9,stroke:#cbd5e1,stroke-width:1px,color:#1f2937
+  classDef rule fill:#fef3c7,stroke:#f2cf6b,stroke-width:1px,color:#713f12
+  classDef out fill:#d1fae5,stroke:#86d9b9,stroke-width:1px,color:#064e3b
+  classDef key fill:#ffffff,stroke:#ffffff,color:#64748b
+
+  counts[("D5 · 500 m class counts per year, from chart 1")]:::data
+  polys[("D6 · Field tables per state, from chart 2")]:::data
+  dlr[("D1 · DLR CropTypes 2024, 10 m")]:::data
+  declared[("D3 · Declared crops of the 2023 editions, BB and NW")]:::data
+
+  subgraph div ["Crop diversity · ADR 12"]
+    direction TB
+    shannon("Effective number of crops per hexagon, exp(Shannon index): 2024, or all years pooled"):::step
+    med("Median arable field size per hexagon"):::step
+    terc("Terciles of both, 3 × 3 classes"):::step
+    o3(["Bivariate maps"]):::out
+    shannon --> terc
+    med --> terc --> o3
+  end
+
+  subgraph crop ["Crop per polygon · ADR 11"]
+    direction TB
+    major("Majority DLR class, pixels weighted by the part inside the polygon"):::step
+    single{{"One crop ≥ 75 % of the polygon, arable land"}}:::rule
+    o1(["Field size by crop and crop mix by field size"]):::out
+    major --> single --> o1
+  end
+
+  subgraph valid ["Validation · ADR 11"]
+    direction TB
+    agree("Declared area where the DLR majority class is the declared crop"):::step
+    o2(["Agreement, shown with the crop plots"]):::out
+    agree --> o2
+  end
+
+  counts --> shannon
+  polys --> med
+  polys --> major
+  dlr --> major
+  dlr --> agree
+  declared --> agree
+
+  linkStyle default stroke-width:1.2px

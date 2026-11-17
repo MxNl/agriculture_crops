@@ -1,0 +1,68 @@
+---
+title: "2 · Field sizes from the Fields of the World field boundaries"
+config:
+  theme: base
+  themeVariables:
+    fontFamily: Noto Sans Display
+    fontSize: 15px
+    primaryTextColor: "#1f2937"
+    lineColor: "#94a3b8"
+    clusterBkg: "#f8fafc"
+    clusterBorder: "#e2e8f0"
+    titleColor: "#475569"
+  flowchart:
+    wrappingWidth: 230
+    padding: 16
+    nodeSpacing: 36
+    rankSpacing: 42
+    curve: basis
+---
+flowchart TB
+  classDef data fill:#dbeafe,stroke:#93c5fd,stroke-width:1px,color:#1e3a5f
+  classDef step fill:#f1f5f9,stroke:#cbd5e1,stroke-width:1px,color:#1f2937
+  classDef rule fill:#fef3c7,stroke:#f2cf6b,stroke-width:1px,color:#713f12
+  classDef out fill:#d1fae5,stroke:#86d9b9,stroke-width:1px,color:#064e3b
+  classDef key fill:#ffffff,stroke:#ffffff,color:#64748b
+
+  ftw[("D2 · Fields of the World: latest edition per state")]:::data
+  editions[("D3 · Fields of the World, yearly editions: BB 2010–2026, NW 2019–2026")]:::data
+
+  subgraph prep ["Field table per state · ADR 7, 9"]
+    direction TB
+    units("Each state's unit as published: fields (BB, NI, NW, SL), reference parcels (BY, HE), field blocks (SH, SN, ST, TH; not converted)"):::step
+    table("Area and perimeter from the geometry; land use from the state's codes"):::step
+    fmin{{"Area ≥ 0.1 ha"}}:::rule
+    units --> table --> fmin
+  end
+
+  arable{{"Arable land only · ADR 8"}}:::rule
+
+  subgraph measures ["Measures · ADR 6, 10, 14"]
+    direction TB
+    hex("25 km² hexagons by centroid, ≥ 20 polygons"):::step
+    med("Median field size, also relative to the national median; field edges per ha"):::step
+    typical("Area-weighted median: the field the typical hectare lies in"):::step
+    pick("Hexagons at the 10th, 50th and 90th percentile"):::step
+    hex --> med --> pick
+  end
+
+  o1(["Field size and field edge maps"]):::out
+  o2(["Share of arable land by field size"]):::out
+  o3(["Example windows with the real polygons"]):::out
+  o4(["Arable land and grassland side by side"]):::out
+  ts("Same field table per edition · ADR 13"):::step
+  o5(["Field sizes over time"]):::out
+
+  d6[("D6 · Field tables per state")]:::data
+  ftw --> units
+  fmin --> d6
+  d6 --> arable
+  d6 --> o4
+  arable --> hex
+  arable --> typical
+  med --> o1
+  typical --> o2
+  pick --> o3
+  editions --> ts --> o5
+
+  linkStyle default stroke-width:1.2px
