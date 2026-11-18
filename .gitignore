@@ -36,3 +36,9 @@ Rplots.pdf
 
 # Fonts --------------------------------------------------------------
 /cache/fonts
+
+# targets store, downloads (fonts, Natural Earth) and plots ----------------------
+_targets/
+cache/
+plots/
+output/
