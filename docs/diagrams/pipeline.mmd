@@ -1,0 +1,53 @@
+---
+title: "5 · Pipeline: main steps and their inputs (targets) · ADR 16"
+config:
+  theme: base
+  themeVariables:
+    fontFamily: Noto Sans Display
+    fontSize: 15px
+    primaryTextColor: "#1f2937"
+    lineColor: "#94a3b8"
+    clusterBkg: "#f8fafc"
+    clusterBorder: "#e2e8f0"
+    titleColor: "#475569"
+  flowchart:
+    wrappingWidth: 230
+    padding: 16
+    nodeSpacing: 36
+    rankSpacing: 42
+    curve: basis
+---
+flowchart LR
+  classDef data fill:#dbeafe,stroke:#93c5fd,stroke-width:1px,color:#1e3a5f
+  classDef step fill:#f1f5f9,stroke:#cbd5e1,stroke-width:1px,color:#1f2937
+  classDef rule fill:#fef3c7,stroke:#f2cf6b,stroke-width:1px,color:#713f12
+  classDef out fill:#d1fae5,stroke:#86d9b9,stroke-width:1px,color:#064e3b
+  classDef key fill:#ffffff,stroke:#ffffff,color:#64748b
+
+  settings[("Settings: definitions.yml")]:::data
+  dlr[("D1 · DLR CropTypes per year")]:::data
+  ftw[("D2, D3 · Fields of the World per state and edition")]:::data
+  ctm[("D4 · Thünen crop type map")]:::data
+
+  maps("Reprojected maps and pixel counts, per year"):::step
+  stats("One pass over all years → D5"):::step
+  tables("Field tables → D6, crops per polygon, per state"):::step
+  maps --> stats
+
+  o1(["Top crop maps and ranking"]):::out
+  o2(["Crop change, repeat cultivation, rotation"]):::out
+  o3(["Field size plots"]):::out
+  o4(["Specialty regions"]):::out
+
+  dlr --> maps
+  ftw --> tables
+  maps --> tables
+  maps --> o1
+  stats --> o2
+  stats --> o3
+  tables --> o3
+  ctm --> o4
+  settings -.-> maps
+  settings -.-> tables
+
+  linkStyle default stroke-width:1.2px

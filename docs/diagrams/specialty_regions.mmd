@@ -1,0 +1,45 @@
+---
+title: "4 · Regions specialised in one crop (Thünen crop type map)"
+config:
+  theme: base
+  themeVariables:
+    fontFamily: Noto Sans Display
+    fontSize: 15px
+    primaryTextColor: "#1f2937"
+    lineColor: "#94a3b8"
+    clusterBkg: "#f8fafc"
+    clusterBorder: "#e2e8f0"
+    titleColor: "#475569"
+  flowchart:
+    wrappingWidth: 230
+    padding: 16
+    nodeSpacing: 36
+    rankSpacing: 42
+    curve: basis
+---
+flowchart TB
+  classDef data fill:#dbeafe,stroke:#93c5fd,stroke-width:1px,color:#1e3a5f
+  classDef step fill:#f1f5f9,stroke:#cbd5e1,stroke-width:1px,color:#1f2937
+  classDef rule fill:#fef3c7,stroke:#f2cf6b,stroke-width:1px,color:#713f12
+  classDef out fill:#d1fae5,stroke:#86d9b9,stroke-width:1px,color:#064e3b
+  classDef key fill:#ffffff,stroke:#ffffff,color:#64748b
+
+  ctm[("D4 · Thünen crop type map 2026")]:::data
+  cells("Resample to 80 m, count the classes per 2 km cell"):::step
+
+  subgraph find ["Find regions · ADR 15"]
+    direction TB
+    core{{"Core cell: farmland ≥ 30 %, crop ≥ 15 % of the farmland, location quotient ≥ 10 (crop share in the cell / in Germany)"}}:::rule
+    regions("Join neighbouring core cells, bridging gaps of one cell"):::step
+    size{{"Region ≥ 500 ha of the crop"}}:::rule
+    core --> regions --> size
+  end
+
+  select("Select by crop area × share: ≤ 2 per crop, ≥ 60 km apart, ≤ 9 in total"):::step
+  window("Window: the region plus 15 % on each side"):::step
+  o1(["Panels with the specialty crop, overview map"]):::out
+
+  ctm --> cells --> core
+  size --> select --> window --> o1
+
+  linkStyle default stroke-width:1.2px
